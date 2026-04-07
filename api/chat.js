@@ -1,501 +1,403 @@
-import { Redis } from '@upstash/redis';
-import { v4 as uuidv4 } from 'uuid';
+// api/chat.js – GLM-5 Professional API with Full Site Features
+import { createHash } from 'crypto';
+import { readFile, writeFile, mkdir } from 'fs/promises';
+import { join } from 'path';
 
-// ===============================
-// التكوينات الأساسية
-// ===============================
-const REDIS = new Redis({
-  url: process.env.UPSTASH_REDIS_REST_URL,
-  token: process.env.UPSTASH_REDIS_REST_TOKEN,
-});
+// ============================
+// 1. الإعدادات العامة والتخزين
+// ============================
+
+// تخزين الـ nonce (مؤقت)
+let cachedNonce = null;
+let nonceTimestamp = 0;
 const NONCE_TTL = 60 * 60 * 1000; // 1 hour
-const SESSION_TTL = 60 * 60 * 24; // 24 hours (بالثواني لـ Redis)
-const MAX_HISTORY_LENGTH = 20;
-const STREAM_CHUNK_DELAY = 0; // تأخير اختياري بين الأجزاء (مللي ثانية)
-const ALLOWED_ORIGINS = (process.env.ALLOWED_ORIGINS || '*').split(',');
-const BLOCKED_WORDS = (process.env.BLOCKED_WORDS || '').split(',').filter(w => w);
-const ENABLE_COST_ESTIMATE = true;
 
-// ===============================
-// أدوات مساعدة
-// ===============================
-function estimateCost(model, inputTokens, outputTokens) {
-  if (!ENABLE_COST_ESTIMATE) return null;
-  const rates = {
-    'glm-4': { input: 0.0001, output: 0.0002 },
-    'glm-3': { input: 0.00005, output: 0.0001 },
-    'glm-130b': { input: 0.0002, output: 0.0004 },
-  };
-  const rate = rates[model] || rates['glm-3'];
-  return (inputTokens * rate.input + outputTokens * rate.output).toFixed(6);
+// مسار تخزين الجلسات (في Vercel /tmp يعمل عبر الطلبات لكنه مؤقت)
+const SESSIONS_DIR = '/tmp/glm_sessions';
+const SESSIONS_FILE = join(SESSIONS_DIR, 'sessions.json');
+
+// قوالب الاقتراحات (مستخلصة من موقع GLM)
+const SUGGESTIONS = [
+  { title: "Explain quantum computing in simple terms", prompt: "Explain quantum computing in simple terms" },
+  { title: "Write a Python function to sort a list using quicksort", prompt: "Write a Python function to sort a list using quicksort" },
+  { title: "What are the latest trends in AI for 2026?", prompt: "What are the latest trends in AI for 2026?" },
+  { title: "Help me write a professional email to my manager about a project delay", prompt: "Help me write a professional email to my manager about a project delay" }
+];
+
+// ============================
+// 2. دوال مساعدة للتخزين (قراءة/كتابة الجلسات)
+// ============================
+
+async function ensureSessionsDir() {
+  try {
+    await mkdir(SESSIONS_DIR, { recursive: true });
+  } catch (e) {}
 }
 
-function filterBlockedWords(text) {
-  let filtered = text;
-  for (const word of BLOCKED_WORDS) {
-    const regex = new RegExp(word, 'gi');
-    filtered = filtered.replace(regex, '[ممنوع]');
-  }
-  return filtered;
-}
-
-async function translateText(text, targetLang = 'en') {
-  // مثال بسيط - يمكن استبدال بـ DeepL أو Google Translate API
-  if (targetLang === 'ar') return text; // افتراض أن النص عربي
-  // هنا يمكن إضافة تكامل حقيقي
-  return `[Translated to ${targetLang}]: ${text}`;
-}
-
-// ===============================
-// إدارة الجلسات في Redis
-// ===============================
-class SessionManager {
-  async getHistory(sessionId) {
-    const key = `chat:${sessionId}:history`;
-    let history = await REDIS.lrange(key, 0, -1);
-    history = history.map(item => JSON.parse(item));
-    // تحديث TTL لكل عملية
-    await REDIS.expire(key, SESSION_TTL);
-    return history;
-  }
-
-  async addMessage(sessionId, role, content, reasoning = null, metadata = {}) {
-    const key = `chat:${sessionId}:history`;
-    const message = { role, content, reasoning, timestamp: Date.now(), ...metadata };
-    await REDIS.rpush(key, JSON.stringify(message));
-    // الحفاظ على الحد الأقصى للطول
-    const len = await REDIS.llen(key);
-    if (len > MAX_HISTORY_LENGTH) {
-      await REDIS.ltrim(key, len - MAX_HISTORY_LENGTH, -1);
-    }
-    await REDIS.expire(key, SESSION_TTL);
-    return message;
-  }
-
-  async setTitle(sessionId, title) {
-    await REDIS.set(`chat:${sessionId}:title`, title, { ex: SESSION_TTL });
-  }
-
-  async getTitle(sessionId) {
-    return await REDIS.get(`chat:${sessionId}:title`);
-  }
-
-  async getAllSessions(userId = 'anonymous') {
-    const keys = await REDIS.keys(`chat:*:history`);
-    // تحليل معرفات الجلسات
-    const sessions = [];
-    for (const key of keys) {
-      const match = key.match(/chat:(.+):history/);
-      if (match) sessions.push(match[1]);
-    }
-    return sessions;
+async function loadSessions() {
+  await ensureSessionsDir();
+  try {
+    const data = await readFile(SESSIONS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (e) {
+    return {}; // sessions object: { sessionId: { name, messages, createdAt, updatedAt } }
   }
 }
 
-// ===============================
-// إدارة Nonce (مع تخزين في Redis)
-// ===============================
-async function getNonce() {
-  const cached = await REDIS.get('glm:nonce');
-  const timestamp = await REDIS.get('glm:nonce_ts');
+async function saveSessions(sessions) {
+  await ensureSessionsDir();
+  await writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+}
+
+// إضافة أو تحديث جلسة
+async function updateSession(sessionId, messages, name = null) {
+  const sessions = await loadSessions();
   const now = Date.now();
-  if (cached && timestamp && (now - parseInt(timestamp)) < NONCE_TTL) {
-    return cached;
+  if (!sessions[sessionId]) {
+    sessions[sessionId] = {
+      id: sessionId,
+      name: name || `Chat ${Object.keys(sessions).length + 1}`,
+      messages: [],
+      createdAt: now,
+      updatedAt: now
+    };
   }
-  // جلب nonce جديد مع إعادة المحاولة
-  for (let i = 0; i < 3; i++) {
-    try {
-      const res = await fetch('https://glm-ai.chat/chat/', {
-        headers: {
-          'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-          Accept: 'text/html,application/xhtml+xml',
-        },
-      });
-      const html = await res.text();
-      const match = html.match(/"nonce":"([^"]+)"/);
-      if (match) {
-        await REDIS.set('glm:nonce', match[1], { ex: Math.floor(NONCE_TTL / 1000) });
-        await REDIS.set('glm:nonce_ts', now.toString(), { ex: Math.floor(NONCE_TTL / 1000) });
-        return match[1];
-      }
-      throw new Error('Nonce not found');
-    } catch (err) {
-      if (i === 2) throw err;
-      await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
-    }
-  }
+  if (messages) sessions[sessionId].messages = messages;
+  if (name) sessions[sessionId].name = name;
+  sessions[sessionId].updatedAt = now;
+  await saveSessions(sessions);
+  return sessions[sessionId];
 }
 
-// ===============================
-// استدعاء GLM API مع دفق أو بدون
-// ===============================
-async function callGlmApi({
-  message,
-  history,
-  nonce,
-  sessionId,
-  model = 'glm-4',
-  temperature = 0.7,
-  top_p = 0.9,
-  max_tokens = 2000,
-  presence_penalty = 0,
-  frequency_penalty = 0,
-  stream = false,
-  onChunk = null,
-  signal = null,
-}) {
-  const historyJson = JSON.stringify(history);
+// الحصول على جلسة
+async function getSession(sessionId) {
+  const sessions = await loadSessions();
+  return sessions[sessionId] || null;
+}
+
+// حذف جلسة
+async function deleteSession(sessionId) {
+  const sessions = await loadSessions();
+  if (sessions[sessionId]) {
+    delete sessions[sessionId];
+    await saveSessions(sessions);
+    return true;
+  }
+  return false;
+}
+
+// ============================
+// 3. دوال الاتصال بـ GLM-5 (nonce, chat)
+// ============================
+
+async function fetchNonce() {
+  const response = await fetch('https://glm-ai.chat/chat/', {
+    headers: {
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+      'Accept': 'text/html,application/xhtml+xml'
+    }
+  });
+  if (!response.ok) throw new Error(`Failed to fetch chat page: ${response.status}`);
+  const html = await response.text();
+  let match = html.match(/["']nonce["']:\s*["']([^"']+)["']/);
+  if (!match) match = html.match(/var\s+nonce\s*=\s*["']([^"']+)["']/);
+  if (!match) throw new Error('Nonce not found');
+  return match[1];
+}
+
+async function getNonce() {
+  const now = Date.now();
+  if (cachedNonce && (now - nonceTimestamp) < NONCE_TTL) return cachedNonce;
+  cachedNonce = await fetchNonce();
+  nonceTimestamp = now;
+  return cachedNonce;
+}
+
+// إرسال رسالة إلى GLM-5 مع دعم التدفق أو بدونه
+async function sendToGLM(message, sessionId, agentMode = true, stream = false) {
+  // تحميل تاريخ الجلسة الحالي
+  let session = await getSession(sessionId);
+  let conversationHistory = session?.messages || [];
+  
+  // إضافة رسالة المستخدم الحالية
+  const newHistory = [...conversationHistory, { role: 'user', content: message }];
+  
+  // تحديث الجلسة بالتاريخ المؤقت (سيتم تحديث الرد لاحقاً)
+  await updateSession(sessionId, newHistory);
+  
+  const historyForAPI = newHistory.slice(-20); // آخر 20 رسالة
+  const historyJson = JSON.stringify(historyForAPI);
+  const nonce = await getNonce();
+  
   const formData = new URLSearchParams();
   formData.append('action', 'glm_chat_stream');
   formData.append('nonce', nonce);
   formData.append('message', message);
   formData.append('history', historyJson);
-  formData.append('agent_mode', '1');
-  // إضافة معلمات إضافية إذا كان API يدعمها (هنا نضيفها كجزء من الطلب ولكن قد لا تستجيب لها GLM)
-  // بعض الواجهات تدعم query params إضافية
-  const url = `https://glm-ai.chat/wp-admin/admin-ajax.php?model=${encodeURIComponent(model)}&temperature=${temperature}&top_p=${top_p}&max_tokens=${max_tokens}`;
-
-  const response = await fetch(url, {
+  formData.append('agent_mode', agentMode ? '1' : '0');
+  
+  const response = await fetch('https://glm-ai.chat/wp-admin/admin-ajax.php', {
     method: 'POST',
     headers: {
       'Content-Type': 'application/x-www-form-urlencoded',
-      Cookie: `glm_session_id=guest_${sessionId}`,
-      Origin: 'https://glm-ai.chat',
-      Referer: 'https://glm-ai.chat/chat/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
+      'Cookie': `glm_session_id=guest_${sessionId}`,
+      'Origin': 'https://glm-ai.chat',
+      'Referer': 'https://glm-ai.chat/chat/',
+      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
     },
-    body: formData.toString(),
-    signal,
+    body: formData.toString()
   });
-
+  
   if (!response.ok) throw new Error(`GLM API error: ${response.status}`);
-
+  
   const reader = response.body.getReader();
   const decoder = new TextDecoder();
-  let fullContent = '';
-  let fullReasoning = '';
-
-  while (true) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    const chunk = decoder.decode(value);
-    const lines = chunk.split('\n');
-    for (const line of lines) {
-      if (!line.startsWith('data:')) continue;
-      const dataStr = line.replace('data:', '').trim();
-      if (dataStr === '[DONE]') continue;
-      try {
-        const parsed = JSON.parse(dataStr);
-        const delta = parsed?.choices?.[0]?.delta;
-        if (delta?.reasoning_content) {
-          fullReasoning += delta.reasoning_content;
-          if (stream && onChunk) onChunk({ type: 'thinking', content: delta.reasoning_content });
+  
+  if (stream) {
+    // إرجاع ReadableStream للتجهيز المباشر
+    return new ReadableStream({
+      async start(controller) {
+        let fullContent = '';
+        let thinking = '';
+        const encoder = new TextEncoder();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            const chunk = decoder.decode(value);
+            const lines = chunk.split('\n');
+            for (const line of lines) {
+              if (!line.startsWith('data:')) continue;
+              const jsonData = line.slice(5).trim();
+              if (jsonData === '[DONE]') {
+                // حفظ الرد الكامل في الجلسة
+                const updatedHistory = [...newHistory, { role: 'assistant', content: fullContent, thinking }];
+                await updateSession(sessionId, updatedHistory);
+                controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
+                controller.close();
+                return;
+              }
+              try {
+                const parsed = JSON.parse(jsonData);
+                const delta = parsed?.choices?.[0]?.delta;
+                if (delta) {
+                  if (delta.reasoning_content) {
+                    thinking += delta.reasoning_content;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', content: delta.reasoning_content })}\n\n`));
+                  }
+                  if (delta.content) {
+                    fullContent += delta.content;
+                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: delta.content })}\n\n`));
+                  }
+                }
+              } catch (e) {}
+            }
+          }
+          controller.close();
+        } catch (err) {
+          controller.error(err);
         }
-        if (delta?.content) {
-          fullContent += delta.content;
-          if (stream && onChunk) onChunk({ type: 'content', content: delta.content });
-        }
-      } catch (err) { /* تجاهل الأجزاء غير المكتملة */ }
+      }
+    });
+  } else {
+    // تجميع الرد كاملاً
+    let fullContent = '';
+    let thinking = '';
+    let buffer = '';
+    while (true) {
+      const { done, value } = await reader.read();
+      if (done) break;
+      buffer += decoder.decode(value, { stream: true });
+      const lines = buffer.split('\n');
+      buffer = lines.pop();
+      for (const line of lines) {
+        if (!line.startsWith('data:')) continue;
+        const jsonData = line.slice(5).trim();
+        if (jsonData === '[DONE]') continue;
+        try {
+          const parsed = JSON.parse(jsonData);
+          const delta = parsed?.choices?.[0]?.delta;
+          if (delta) {
+            if (delta.reasoning_content) thinking += delta.reasoning_content;
+            if (delta.content) fullContent += delta.content;
+          }
+        } catch (e) {}
+      }
     }
-  }
-  return { content: fullContent, reasoning: fullReasoning };
-}
-
-// ===============================
-// وظائف Function Calling (مثال)
-// ===============================
-const availableFunctions = {
-  get_weather: async (args) => {
-    const { location } = args;
-    // محاكاة طقس
-    return `الطقس في ${location} مشمس مع درجة حرارة 25°C.`;
-  },
-  get_time: async () => {
-    return new Date().toLocaleTimeString('ar-EG');
-  },
-};
-
-async function handleFunctionCall(functionName, args) {
-  const fn = availableFunctions[functionName];
-  if (fn) return await fn(args);
-  return `Function ${functionName} غير موجودة.`;
-}
-
-// ===============================
-// نظام RAG بسيط (مكتبة معرفة)
-// ===============================
-const knowledgeBase = [
-  { keywords: ['مصر', 'القاهرة'], answer: 'مصر دولة عربية عاصمتها القاهرة، وتشتهر بالأهرامات.' },
-  { keywords: ['الذكاء الاصطناعي', 'AI'], answer: 'الذكاء الاصطناعي هو محاكاة العمليات الذكية بواسطة الآلات.' },
-];
-async function searchKnowledge(query) {
-  const lowerQuery = query.toLowerCase();
-  for (const item of knowledgeBase) {
-    if (item.keywords.some(kw => lowerQuery.includes(kw))) {
-      return item.answer;
-    }
-  }
-  return null;
-}
-
-// ===============================
-// نظام توليد عنوان المحادثة
-// ===============================
-async function generateTitle(sessionManager, sessionId, firstMessage) {
-  const existing = await sessionManager.getTitle(sessionId);
-  if (existing) return existing;
-  // توليد عنوان بسيط: أول 50 حرفًا من أول رسالة
-  let title = firstMessage.slice(0, 50);
-  if (title.length < 5) title = 'محادثة جديدة';
-  await sessionManager.setTitle(sessionId, title);
-  return title;
-}
-
-// ===============================
-// نظام تحليل المشاعر (وهمي)
-// ===============================
-function analyzeSentiment(text) {
-  const positive = ['رائع', 'جميل', 'ممتاز', 'شكرا'];
-  const negative = ['سيء', 'فاشل', 'خطأ', 'مشكلة'];
-  let score = 0;
-  for (const word of positive) if (text.includes(word)) score += 1;
-  for (const word of negative) if (text.includes(word)) score -= 1;
-  if (score > 0) return 'إيجابي';
-  if (score < 0) return 'سلبي';
-  return 'محايد';
-}
-
-// ===============================
-// نظام Rate Limiting باستخدام Redis
-// ===============================
-class RateLimiter {
-  async isAllowed(identifier, limit = 15, windowSec = 60) {
-    const key = `rate:${identifier}`;
-    const current = await REDIS.incr(key);
-    if (current === 1) await REDIS.expire(key, windowSec);
-    return current <= limit;
+    const updatedHistory = [...newHistory, { role: 'assistant', content: fullContent, thinking }];
+    await updateSession(sessionId, updatedHistory);
+    return { content: fullContent, thinking };
   }
 }
 
-// ===============================
-// Handler الرئيسي مع SSE
-// ===============================
-const rateLimiter = new RateLimiter();
-const sessionManager = new SessionManager();
+// ============================
+// 4. دوال WordPress REST API (proxy)
+// ============================
+
+async function proxyWordPress(endpoint, params = {}) {
+  const url = new URL(endpoint, 'https://glm-ai.chat');
+  Object.entries(params).forEach(([k, v]) => url.searchParams.append(k, v));
+  const res = await fetch(url.toString(), {
+    headers: { 'User-Agent': 'GLM-API-Proxy/1.0' }
+  });
+  if (!res.ok) throw new Error(`WordPress API error: ${res.status}`);
+  return res.json();
+}
+
+// ============================
+// 5. معالج الطلبات الرئيسي (Vercel Handler)
+// ============================
 
 export default async function handler(req, res) {
-  // CORS ديناميكي
-  const origin = req.headers.origin;
-  if (ALLOWED_ORIGINS.includes('*') || (origin && ALLOWED_ORIGINS.includes(origin))) {
-    res.setHeader('Access-Control-Allow-Origin', origin || '*');
-  } else {
-    res.setHeader('Access-Control-Allow-Origin', 'null');
-  }
-  res.setHeader('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type, Authorization, X-Stream');
-
+  // إعدادات CORS
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, PUT, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  
   if (req.method === 'OPTIONS') return res.status(200).end();
-
-  // نقطة نهاية الصحة
-  if (req.url === '/health') {
-    return res.status(200).json({ status: 'ok', timestamp: Date.now() });
-  }
-
+  
+  const { method, url } = req;
+  const path = url.split('?')[0]; // المسار بدون query
+  
   try {
-    // استخراج المعاملات
-    let message = '', sessionId = 'default', prompt = '', model = 'glm-4', temperature = 0.7, top_p = 0.9, max_tokens = 2000;
-    let presence_penalty = 0, frequency_penalty = 0, stream = false, translateTo = null, imageBase64 = null;
-
-    if (req.method === 'GET') {
-      message = req.query.request || '';
-      sessionId = req.query.session_id || 'default';
-      prompt = req.query.prompt || '';
-      model = req.query.model || 'glm-4';
-      temperature = parseFloat(req.query.temperature) || 0.7;
-      top_p = parseFloat(req.query.top_p) || 0.9;
-      max_tokens = parseInt(req.query.max_tokens) || 2000;
-      presence_penalty = parseFloat(req.query.presence_penalty) || 0;
-      frequency_penalty = parseFloat(req.query.frequency_penalty) || 0;
-      stream = req.query.stream === 'true';
-      translateTo = req.query.translate_to || null;
-      imageBase64 = req.query.image || null;
-    } else if (req.method === 'POST') {
-      message = req.body.request || '';
-      sessionId = req.body.session_id || 'default';
-      prompt = req.body.prompt || '';
-      model = req.body.model || 'glm-4';
-      temperature = req.body.temperature ?? 0.7;
-      top_p = req.body.top_p ?? 0.9;
-      max_tokens = req.body.max_tokens ?? 2000;
-      presence_penalty = req.body.presence_penalty ?? 0;
-      frequency_penalty = req.body.frequency_penalty ?? 0;
-      stream = req.body.stream === true;
-      translateTo = req.body.translate_to || null;
-      imageBase64 = req.body.image || null;
-    } else {
-      return res.status(405).json({ error: 'Method not allowed' });
-    }
-
-    if (!message && !imageBase64) {
-      return res.status(400).json({ error: 'Missing "request" or "image" field' });
-    }
-
-    // معالجة الصورة إذا وجدت (تحويل إلى نص باستخدام وصف وهمي)
-    let imageDescription = '';
-    if (imageBase64) {
-      // هنا يمكن استدعاء نموذج رؤية حاسوبية (مثل GPT-4V) لكن سنقوم بمحاكاة
-      imageDescription = '[صورة مرفوعة تحتوي على محتوى مرئي]';
-      message = message ? `${message}\nوصف الصورة: ${imageDescription}` : `وصف الصورة: ${imageDescription}`;
-    }
-
-    // فلترة الكلمات الممنوعة
-    message = filterBlockedWords(message);
-
-    // Rate Limiting (باستخدام IP)
-    const ip = req.headers['x-forwarded-for']?.split(',')[0] || req.socket.remoteAddress || 'unknown';
-    const rateKey = `${ip}:${sessionId}`;
-    const allowed = await rateLimiter.isAllowed(rateKey, 20, 60);
-    if (!allowed) {
-      return res.status(429).json({ error: 'Too many requests. Try later.' });
-    }
-
-    // جلب nonce
-    let nonce;
-    try {
-      nonce = await getNonce();
-    } catch (err) {
-      console.error('Nonce error:', err);
-      return res.status(502).json({ error: 'Upstream nonce fetch failed' });
-    }
-
-    // جلب التاريخ
-    let history = await sessionManager.getHistory(sessionId);
-    if (prompt && history.length === 0) {
-      history.push({ role: 'user', content: prompt });
-    }
-
-    // البحث في المعرفة (RAG) إذا كان السؤال استفساريًا
-    let ragAnswer = null;
-    if (message.includes('ما هو') || message.includes('من هو') || message.includes('شرح')) {
-      ragAnswer = await searchKnowledge(message);
-      if (ragAnswer) {
-        message = `${message}\nمعلومة مساعدة: ${ragAnswer}`;
-      }
-    }
-
-    // تحليل المشاعر (اختياري للتسجيل)
-    const sentiment = analyzeSentiment(message);
-    console.log(`[SENTIMENT] ${sessionId}: ${sentiment}`);
-
-    // دفق الردود إذا طلب المستخدم
-    if (stream) {
-      res.setHeader('Content-Type', 'text/event-stream');
-      res.setHeader('Cache-Control', 'no-cache');
-      res.setHeader('Connection', 'keep-alive');
-      res.flushHeaders(); // ضروري لـ Vercel
-
-      const abortController = new AbortController();
-      req.on('close', () => abortController.abort());
-
-      let finalContent = '';
-      let finalReasoning = '';
-
-      const onChunk = ({ type, content }) => {
-        finalContent += content;
-        res.write(`data: ${JSON.stringify({ type, content, done: false })}\n\n`);
-        if (STREAM_CHUNK_DELAY) setTimeout(() => {}, STREAM_CHUNK_DELAY);
-      };
-
-      try {
-        const { content, reasoning } = await callGlmApi({
-          message,
-          history,
-          nonce,
-          sessionId,
-          model,
-          temperature,
-          top_p,
-          max_tokens,
-          presence_penalty,
-          frequency_penalty,
-          stream: true,
-          onChunk,
-          signal: abortController.signal,
-        });
-        finalContent = content;
-        finalReasoning = reasoning;
-      } catch (err) {
-        if (err.name === 'AbortError') {
-          res.write(`data: ${JSON.stringify({ type: 'error', content: 'Stream aborted by user', done: true })}\n\n`);
-        } else {
-          res.write(`data: ${JSON.stringify({ type: 'error', content: err.message, done: true })}\n\n`);
+    // ------------------- مسار الدردشة الرئيسي -------------------
+    if (path === '/api/chat' && method === 'POST') {
+      const { message, session_id, agent_mode = true, stream = false } = req.body;
+      if (!message) return res.status(400).json({ error: 'message is required' });
+      const sessionId = session_id || `session_${Date.now()}`;
+      
+      if (stream) {
+        res.setHeader('Content-Type', 'text/event-stream');
+        res.setHeader('Cache-Control', 'no-cache');
+        res.setHeader('Connection', 'keep-alive');
+        const streamResponse = await sendToGLM(message, sessionId, agent_mode, true);
+        const reader = streamResponse.getReader();
+        try {
+          while (true) {
+            const { done, value } = await reader.read();
+            if (done) break;
+            res.write(value);
+          }
+        } finally {
+          res.end();
         }
-        return res.end();
+      } else {
+        const result = await sendToGLM(message, sessionId, agent_mode, false);
+        res.status(200).json({
+          success: true,
+          content: result.content,
+          thinking: result.thinking,
+          session_id: sessionId
+        });
       }
-
-      // حفظ الرد في الجلسة
-      await sessionManager.addMessage(sessionId, 'user', message, null, { sentiment, model, image: !!imageBase64 });
-      await sessionManager.addMessage(sessionId, 'assistant', finalContent, finalReasoning, { model });
-
-      // توليد عنوان إذا كان جديدًا
-      if (history.length === 0) await generateTitle(sessionManager, sessionId, message);
-
-      // إرسال إشارة النهاية
-      res.write(`data: ${JSON.stringify({ type: 'done', thinking: finalReasoning, content: finalContent, done: true })}\n\n`);
-      return res.end();
     }
-
-    // وضع عدم الدفق (JSON عادي)
-    const { content, reasoning } = await callGlmApi({
-      message,
-      history,
-      nonce,
-      sessionId,
-      model,
-      temperature,
-      top_p,
-      max_tokens,
-      presence_penalty,
-      frequency_penalty,
-      stream: false,
-    });
-
-    // حفظ الرد
-    await sessionManager.addMessage(sessionId, 'user', message, null, { sentiment, model, image: !!imageBase64 });
-    await sessionManager.addMessage(sessionId, 'assistant', content, reasoning, { model });
-
-    // توليد عنوان للمحادثة الجديدة
-    let title = null;
-    if (history.length === 0) title = await generateTitle(sessionManager, sessionId, message);
-
-    // ترجمة الرد إذا طلب المستخدم
-    let translatedContent = null;
-    if (translateTo && translateTo !== 'ar') {
-      translatedContent = await translateText(content, translateTo);
+    
+    // ------------------- إدارة الجلسات (المحادثات) -------------------
+    else if (path === '/api/conversations' && method === 'GET') {
+      const sessions = await loadSessions();
+      const list = Object.values(sessions).map(s => ({
+        id: s.id,
+        name: s.name,
+        createdAt: s.createdAt,
+        updatedAt: s.updatedAt,
+        messageCount: s.messages.length
+      }));
+      res.status(200).json(list);
     }
-
-    // تقدير التكلفة (وهمي)
-    const inputTokens = Math.ceil(message.length / 4);
-    const outputTokens = Math.ceil(content.length / 4);
-    const cost = estimateCost(model, inputTokens, outputTokens);
-
-    const responsePayload = {
-      thinking: reasoning,
-      content: translatedContent || content,
-      session_id: sessionId,
-      title,
-      sentiment,
-      model_used: model,
-      estimated_cost_usd: cost,
-      usage: { input_tokens: inputTokens, output_tokens: outputTokens },
-    };
-    return res.status(200).json(responsePayload);
+    else if (path === '/api/conversations' && method === 'POST') {
+      const { name } = req.body;
+      const newId = `session_${Date.now()}_${Math.random().toString(36).substr(2, 6)}`;
+      await updateSession(newId, [], name || 'New Chat');
+      res.status(201).json({ id: newId, name: name || 'New Chat' });
+    }
+    else if (path.startsWith('/api/conversations/') && method === 'DELETE') {
+      const id = path.split('/')[3];
+      const deleted = await deleteSession(id);
+      if (!deleted) return res.status(404).json({ error: 'Session not found' });
+      res.status(200).json({ success: true });
+    }
+    else if (path.startsWith('/api/conversations/') && method === 'PUT') {
+      const id = path.split('/')[3];
+      const { name } = req.body;
+      if (!name) return res.status(400).json({ error: 'name required' });
+      const session = await getSession(id);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      await updateSession(id, session.messages, name);
+      res.status(200).json({ success: true });
+    }
+    else if (path.startsWith('/api/conversations/') && path.endsWith('/messages') && method === 'GET') {
+      const id = path.split('/')[3];
+      const session = await getSession(id);
+      if (!session) return res.status(404).json({ error: 'Session not found' });
+      res.status(200).json(session.messages);
+    }
+    
+    // ------------------- الاقتراحات -------------------
+    else if (path === '/api/suggestions' && method === 'GET') {
+      res.status(200).json(SUGGESTIONS);
+    }
+    
+    // ------------------- معلومات النموذج -------------------
+    else if (path === '/api/models' && method === 'GET') {
+      // يمكن استخراج النماذج المتاحة من ووردبريس أو إرجاع افتراضي
+      res.status(200).json([
+        { id: 'glm-5', name: 'GLM-5', description: 'Latest GLM model' }
+      ]);
+    }
+    
+    // ------------------- واجهات WordPress REST API (وكيل) -------------------
+    else if (path === '/api/wp-page' && method === 'GET') {
+      const data = await proxyWordPress('/wp-json/wp/v2/pages/11');
+      res.status(200).json(data);
+    }
+    else if (path === '/api/wp-oembed' && method === 'GET') {
+      const { url, format = 'json' } = req.query;
+      if (!url) return res.status(400).json({ error: 'url parameter required' });
+      const data = await proxyWordPress('/wp-json/oembed/1.0/embed', { url, format });
+      res.status(200).json(data);
+    }
+    
+    // ------------------- نموذج الاتصال (Contact Form 7) -------------------
+    else if (path === '/api/contact' && method === 'POST') {
+      const { name, email, message } = req.body;
+      if (!name || !email || !message) {
+        return res.status(400).json({ error: 'name, email, message are required' });
+      }
+      // إرسال إلى WordPress Contact Form 7 (محاكاة)
+      const formData = new URLSearchParams();
+      formData.append('your-name', name);
+      formData.append('your-email', email);
+      formData.append('your-message', message);
+      const response = await fetch('https://glm-ai.chat/wp-json/contact-form-7/v1/contact-forms/1/feedback', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
+        body: formData
+      });
+      const result = await response.json();
+      res.status(response.ok ? 200 : 500).json(result);
+    }
+    
+    // ------------------- الحصول على nonce جديد (للتصحيح) -------------------
+    else if (path === '/api/refresh-nonce' && method === 'GET') {
+      const newNonce = await fetchNonce();
+      cachedNonce = newNonce;
+      nonceTimestamp = Date.now();
+      res.status(200).json({ nonce: newNonce });
+    }
+    
+    else {
+      res.status(404).json({ error: 'Endpoint not found' });
+    }
   } catch (error) {
-    console.error('Fatal error:', error);
-    return res.status(500).json({
-      error: 'Internal server error',
-      details: error.message,
-      code: 'INTERNAL_SERVER_ERROR',
-    });
+    console.error('API Error:', error);
+    res.status(500).json({ error: 'Internal server error', details: error.message });
   }
 }
+
+// تكوين Vercel (زيادة المهلة)
+export const config = {
+  api: {
+    bodyParser: { sizeLimit: '2mb' },
+    externalResolver: true
+  }
+};
