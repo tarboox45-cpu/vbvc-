@@ -3,8 +3,8 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>GLM-5 AI Chat Pro | الذكاء الاصطناعي المتطور</title>
-    <meta name="description" content="GLM-5 AI Chat Pro - تجربة دردشة ذكية متطورة مع دعم الصور وإنشاء المواقع">
+    <title>GLM-5 Pro | الذكاء الاصطناعي المتطور</title>
+    <meta name="description" content="GLM-5 Pro - تجربة دردشة ذكية متطورة مع دعم الصور وإنشاء المواقع">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
     <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
@@ -40,13 +40,15 @@
             </div>
             
             <div class="conversations-list" id="conversationsList">
-                <!-- Dynamic conversations -->
+                <div class="empty-state" style="text-align: center; padding: 2rem; color: var(--text-secondary);">جاري التحميل...</div>
             </div>
             
             <div class="sidebar-footer">
-                <div class="agent-badge" id="agentBadge">
-                    <div class="agent-dot"></div>
-                    <span>Agent Mode</span>
+                <div class="agent-badge">
+                    <div class="agent-info">
+                        <div class="agent-dot"></div>
+                        <span>وضع الوكيل</span>
+                    </div>
                     <label class="switch">
                         <input type="checkbox" id="agentToggle" checked>
                         <span class="slider"></span>
@@ -54,6 +56,9 @@
                 </div>
             </div>
         </aside>
+        
+        <!-- Sidebar Overlay for Mobile -->
+        <div id="sidebar-overlay" class="sidebar-overlay"></div>
         
         <!-- Main Chat Area -->
         <main class="main-content">
@@ -65,22 +70,21 @@
                 </button>
                 <div class="model-info">
                     <span class="model-name">GLM-5</span>
-                    <span class="model-badge">Latest</span>
+                    <span class="model-badge">Pro</span>
                 </div>
-                <div class="header-actions">
-                    <button class="theme-toggle" id="themeToggle">
-                        <svg class="sun-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <circle cx="12" cy="12" r="5"/>
-                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
-                        </svg>
-                        <svg class="moon-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
-                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
-                        </svg>
-                    </button>
-                </div>
+                <button class="theme-toggle" id="themeToggle">
+                    <svg class="sun-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <circle cx="12" cy="12" r="5"/>
+                        <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                    </svg>
+                    <svg class="moon-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" style="display: none;">
+                        <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                    </svg>
+                </button>
             </header>
             
             <div class="chat-container" id="chatContainer">
+                <!-- Welcome Screen -->
                 <div class="welcome-screen" id="welcomeScreen">
                     <div class="welcome-icon">
                         <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
@@ -92,15 +96,15 @@
                     <h1>مرحباً بك في GLM-5 Pro</h1>
                     <p>أسألني أي شيء - أنا هنا لمساعدتك</p>
                     <div class="suggestions-grid" id="suggestionsGrid">
-                        <!-- Dynamic suggestions -->
+                        <!-- Dynamic suggestions will load here -->
                     </div>
                 </div>
                 
-                <div class="messages-area" id="messagesArea" style="display: none;">
-                    <!-- Chat messages -->
-                </div>
+                <!-- Messages Area -->
+                <div class="messages-area" id="messagesArea" style="display: none;"></div>
             </div>
             
+            <!-- Input Area -->
             <div class="input-area">
                 <div class="input-container">
                     <div class="image-preview-area" id="imagePreviewArea"></div>
@@ -136,7 +140,7 @@
         </main>
     </div>
     
-    <div class="toast" id="toast"></div>
+    <div id="toast" class="toast"></div>
     
     <script src="/script.js"></script>
 </body>
