@@ -1,723 +1,143 @@
 <!DOCTYPE html>
-<html lang="ar" dir="ltr">
+<html lang="ar" dir="rtl">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>GLM-5 الذكي | محادثة متقدمة</title>
-    <meta name="description" content="تجربة دردشة فائقة السرعة مع نموذج GLM-5. تصميم عصري، دارك مود، وتدفق فوري.">
+    <title>GLM-5 AI Chat Pro | الذكاء الاصطناعي المتطور</title>
+    <meta name="description" content="GLM-5 AI Chat Pro - تجربة دردشة ذكية متطورة مع دعم الصور وإنشاء المواقع">
     <link rel="preconnect" href="https://fonts.googleapis.com">
     <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-    <link href="https://fonts.googleapis.com/css2?family=Inter:opsz,wght@14..32,300;14..32,400;14..32,500;14..32,600;14..32,700&display=swap" rel="stylesheet">
-    <style>
-        * {
-            margin: 0;
-            padding: 0;
-            box-sizing: border-box;
-        }
-
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: var(--bg-primary);
-            color: var(--text-primary);
-            transition: background-color 0.3s ease, color 0.2s ease;
-            height: 100vh;
-            overflow: hidden;
-        }
-
-        /* ===== DARK MODE VARIABLES (default) ===== */
-        :root {
-            --bg-primary: #0a0c10;
-            --bg-secondary: #1e1f24;
-            --bg-tertiary: #2c2d34;
-            --bg-elevated: #15171c;
-            --border-color: #2e3038;
-            --text-primary: #eef2ff;
-            --text-secondary: #9ca3af;
-            --text-muted: #6b7280;
-            --accent: #6366f1;
-            --accent-hover: #818cf8;
-            --accent-glow: rgba(99, 102, 241, 0.2);
-            --danger: #ef4444;
-            --success: #10b981;
-            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.3);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.4);
-            --transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
-        }
-
-        /* Light mode override */
-        body.light {
-            --bg-primary: #f9fafb;
-            --bg-secondary: #ffffff;
-            --bg-tertiary: #f3f4f6;
-            --bg-elevated: #ffffff;
-            --border-color: #e5e7eb;
-            --text-primary: #111827;
-            --text-secondary: #4b5563;
-            --text-muted: #6b7280;
-            --accent: #4f46e5;
-            --accent-hover: #6366f1;
-            --accent-glow: rgba(79, 70, 229, 0.1);
-            --shadow-sm: 0 1px 2px 0 rgba(0, 0, 0, 0.05);
-            --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.05);
-        }
-
-        /* Layout */
-        .app {
-            display: flex;
-            flex-direction: column;
-            height: 100vh;
-            max-width: 100vw;
-            background: var(--bg-primary);
-        }
-
-        /* Header */
-        .header {
-            flex-shrink: 0;
-            padding: 1rem 1.5rem;
-            border-bottom: 1px solid var(--border-color);
-            background: var(--bg-elevated);
-            backdrop-filter: blur(10px);
-            display: flex;
-            justify-content: space-between;
-            align-items: center;
-            z-index: 10;
-        }
-
-        .logo-area {
-            display: flex;
-            align-items: center;
-            gap: 12px;
-        }
-
-        .logo-icon {
-            width: 32px;
-            height: 32px;
-            background: linear-gradient(135deg, var(--accent), #a855f7);
-            border-radius: 12px;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: 700;
-            font-size: 18px;
-            color: white;
-            box-shadow: 0 4px 12px var(--accent-glow);
-        }
-
-        .logo-text {
-            font-weight: 700;
-            font-size: 1.3rem;
-            background: linear-gradient(120deg, #e0e7ff, var(--accent));
-            background-clip: text;
-            -webkit-background-clip: text;
-            color: transparent;
-        }
-
-        .model-badge {
-            background: var(--bg-tertiary);
-            padding: 4px 12px;
-            border-radius: 40px;
-            font-size: 0.75rem;
-            font-weight: 500;
-            color: var(--accent);
-            border: 1px solid var(--border-color);
-        }
-
-        .controls {
-            display: flex;
-            gap: 12px;
-        }
-
-        .icon-btn {
-            background: transparent;
-            border: none;
-            color: var(--text-secondary);
-            cursor: pointer;
-            width: 38px;
-            height: 38px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            transition: var(--transition);
-        }
-
-        .icon-btn:hover {
-            background: var(--bg-tertiary);
-            color: var(--text-primary);
-            transform: scale(1.05);
-        }
-
-        /* Chat container */
-        .chat-container {
-            flex: 1;
-            overflow-y: auto;
-            padding: 1.5rem;
-            scroll-behavior: smooth;
-        }
-
-        .messages {
-            max-width: 800px;
-            margin: 0 auto;
-            display: flex;
-            flex-direction: column;
-            gap: 1.5rem;
-        }
-
-        /* message bubble */
-        .message {
-            display: flex;
-            gap: 16px;
-            animation: fadeSlideUp 0.3s ease-out;
-        }
-
-        @keyframes fadeSlideUp {
-            from {
-                opacity: 0;
-                transform: translateY(12px);
-            }
-            to {
-                opacity: 1;
-                transform: translateY(0);
-            }
-        }
-
-        .message-avatar {
-            width: 36px;
-            height: 36px;
-            border-radius: 50%;
-            background: var(--bg-tertiary);
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            font-weight: bold;
-            flex-shrink: 0;
-        }
-
-        .user .message-avatar {
-            background: var(--accent);
-            color: white;
-        }
-
-        .assistant .message-avatar {
-            background: linear-gradient(145deg, #3b3f5c, #1f212e);
-            color: var(--accent);
-        }
-
-        .message-content {
-            flex: 1;
-            background: var(--bg-elevated);
-            padding: 12px 18px;
-            border-radius: 20px;
-            border-top-left-radius: 4px;
-            line-height: 1.55;
-            font-size: 0.95rem;
-            border: 1px solid var(--border-color);
-            box-shadow: var(--shadow-sm);
-        }
-
-        .user .message-content {
-            background: var(--accent);
-            color: white;
-            border: none;
-        }
-
-        .assistant .message-content {
-            background: var(--bg-secondary);
-        }
-
-        .message-content p {
-            margin: 0 0 8px 0;
-        }
-
-        .thinking {
-            font-size: 0.8rem;
-            color: var(--text-muted);
-            margin-top: 6px;
-            padding-top: 6px;
-            border-top: 1px dashed var(--border-color);
-        }
-
-        .typing-indicator {
-            display: flex;
-            gap: 6px;
-            padding: 12px 18px;
-            background: var(--bg-secondary);
-            border-radius: 20px;
-            width: fit-content;
-        }
-
-        .typing-indicator span {
-            width: 8px;
-            height: 8px;
-            background: var(--accent);
-            border-radius: 50%;
-            animation: pulse 1.4s infinite ease-in-out;
-        }
-
-        .typing-indicator span:nth-child(1) { animation-delay: 0s; }
-        .typing-indicator span:nth-child(2) { animation-delay: 0.2s; }
-        .typing-indicator span:nth-child(3) { animation-delay: 0.4s; }
-
-        @keyframes pulse {
-            0%, 60%, 100% { transform: scale(0.6); opacity: 0.4; }
-            30% { transform: scale(1); opacity: 1; }
-        }
-
-        /* input area */
-        .input-area {
-            flex-shrink: 0;
-            padding: 1rem 1.5rem 1.5rem;
-            background: var(--bg-primary);
-            border-top: 1px solid var(--border-color);
-        }
-
-        .input-wrapper {
-            max-width: 800px;
-            margin: 0 auto;
-            display: flex;
-            gap: 12px;
-            background: var(--bg-secondary);
-            border-radius: 32px;
-            padding: 6px 6px 6px 20px;
-            border: 1px solid var(--border-color);
-            transition: var(--transition);
-        }
-
-        .input-wrapper:focus-within {
-            border-color: var(--accent);
-            box-shadow: 0 0 0 3px var(--accent-glow);
-        }
-
-        .input-wrapper textarea {
-            flex: 1;
-            background: transparent;
-            border: none;
-            outline: none;
-            color: var(--text-primary);
-            font-family: inherit;
-            font-size: 0.95rem;
-            resize: none;
-            padding: 12px 0;
-            max-height: 150px;
-        }
-
-        .input-wrapper textarea::placeholder {
-            color: var(--text-muted);
-        }
-
-        .send-btn {
-            background: var(--accent);
-            border: none;
-            color: white;
-            width: 42px;
-            height: 42px;
-            border-radius: 50%;
-            display: flex;
-            align-items: center;
-            justify-content: center;
-            cursor: pointer;
-            transition: var(--transition);
-        }
-
-        .send-btn:disabled {
-            opacity: 0.5;
-            cursor: not-allowed;
-        }
-
-        .send-btn:hover:not(:disabled) {
-            background: var(--accent-hover);
-            transform: scale(1.02);
-        }
-
-        .stop-btn {
-            background: var(--danger);
-        }
-
-        .footer-note {
-            text-align: center;
-            font-size: 0.7rem;
-            color: var(--text-muted);
-            margin-top: 12px;
-        }
-
-        /* scrollbar */
-        ::-webkit-scrollbar {
-            width: 5px;
-        }
-        ::-webkit-scrollbar-track {
-            background: var(--bg-tertiary);
-        }
-        ::-webkit-scrollbar-thumb {
-            background: var(--accent);
-            border-radius: 10px;
-        }
-
-        /* Responsive */
-        @media (max-width: 640px) {
-            .header {
-                padding: 0.75rem 1rem;
-            }
-            .logo-text {
-                font-size: 1rem;
-            }
-            .chat-container {
-                padding: 1rem;
-            }
-            .message-content {
-                font-size: 0.85rem;
-            }
-            .input-area {
-                padding: 0.75rem 1rem 1.2rem;
-            }
-        }
-    </style>
+    <link href="https://fonts.googleapis.com/css2?family=Cairo:wght@300;400;500;600;700;800&display=swap" rel="stylesheet">
+    <link rel="stylesheet" href="/style.css">
 </head>
 <body>
-<div class="app">
-    <header class="header">
-        <div class="logo-area">
-            <div class="logo-icon">✨</div>
-            <div class="logo-text">GLM-5</div>
-            <div class="model-badge">Agent Mode</div>
-        </div>
-        <div class="controls">
-            <button id="themeToggle" class="icon-btn" title="تبديل الوضع">
-                🌙
-            </button>
-            <button id="clearChat" class="icon-btn" title="مسح المحادثة">
-                🗑️
-            </button>
-        </div>
-    </header>
-
-    <div class="chat-container" id="chatContainer">
-        <div class="messages" id="messagesList">
-            <!-- welcome message -->
-            <div class="message assistant">
-                <div class="message-avatar">🤖</div>
-                <div class="message-content">
-                    مرحباً! أنا GLM-5، نموذج ذكاء اصطناعي متقدم. كيف يمكنني مساعدتك اليوم؟
+    <div class="app-container">
+        <!-- Sidebar -->
+        <aside class="sidebar" id="sidebar">
+            <div class="sidebar-header">
+                <div class="logo">
+                    <svg class="logo-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                        <path d="M2 17l10 5 10-5"/>
+                        <path d="M2 12l10 5 10-5"/>
+                    </svg>
+                    <span>GLM-5 Pro</span>
+                </div>
+                <button class="new-chat-btn" id="newChatBtn">
+                    <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M12 5v14M5 12h14"/>
+                    </svg>
+                    <span>محادثة جديدة</span>
+                </button>
+            </div>
+            
+            <div class="sidebar-search">
+                <svg width="18" height="18" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                    <circle cx="11" cy="11" r="8"/>
+                    <path d="m21 21-4.35-4.35"/>
+                </svg>
+                <input type="text" placeholder="بحث في المحادثات..." id="searchConversations">
+            </div>
+            
+            <div class="conversations-list" id="conversationsList">
+                <!-- Dynamic conversations -->
+            </div>
+            
+            <div class="sidebar-footer">
+                <div class="agent-badge" id="agentBadge">
+                    <div class="agent-dot"></div>
+                    <span>Agent Mode</span>
+                    <label class="switch">
+                        <input type="checkbox" id="agentToggle" checked>
+                        <span class="slider"></span>
+                    </label>
                 </div>
             </div>
-        </div>
+        </aside>
+        
+        <!-- Main Chat Area -->
+        <main class="main-content">
+            <header class="chat-header">
+                <button class="menu-toggle" id="menuToggle">
+                    <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                        <path d="M3 12h18M3 6h18M3 18h18"/>
+                    </svg>
+                </button>
+                <div class="model-info">
+                    <span class="model-name">GLM-5</span>
+                    <span class="model-badge">Latest</span>
+                </div>
+                <div class="header-actions">
+                    <button class="theme-toggle" id="themeToggle">
+                        <svg class="sun-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <circle cx="12" cy="12" r="5"/>
+                            <path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/>
+                        </svg>
+                        <svg class="moon-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                            <path d="M21 12.79A9 9 0 1 1 11.21 3 7 7 0 0 0 21 12.79z"/>
+                        </svg>
+                    </button>
+                </div>
+            </header>
+            
+            <div class="chat-container" id="chatContainer">
+                <div class="welcome-screen" id="welcomeScreen">
+                    <div class="welcome-icon">
+                        <svg width="64" height="64" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.5">
+                            <path d="M12 2L2 7l10 5 10-5-10-5z"/>
+                            <path d="M2 17l10 5 10-5"/>
+                            <path d="M2 12l10 5 10-5"/>
+                        </svg>
+                    </div>
+                    <h1>مرحباً بك في GLM-5 Pro</h1>
+                    <p>أسألني أي شيء - أنا هنا لمساعدتك</p>
+                    <div class="suggestions-grid" id="suggestionsGrid">
+                        <!-- Dynamic suggestions -->
+                    </div>
+                </div>
+                
+                <div class="messages-area" id="messagesArea" style="display: none;">
+                    <!-- Chat messages -->
+                </div>
+            </div>
+            
+            <div class="input-area">
+                <div class="input-container">
+                    <div class="image-preview-area" id="imagePreviewArea"></div>
+                    <div class="input-wrapper">
+                        <textarea id="messageInput" placeholder="اكتب رسالتك هنا..." rows="1" maxlength="5000"></textarea>
+                        <div class="input-actions">
+                            <button class="attach-btn" id="attachBtn" title="إرفاق صورة">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <rect x="3" y="3" width="18" height="18" rx="2" ry="2"/>
+                                    <circle cx="8.5" cy="8.5" r="1.5"/>
+                                    <polyline points="21 15 16 10 5 21"/>
+                                </svg>
+                            </button>
+                            <input type="file" id="imageInput" accept="image/*" multiple style="display: none;">
+                            <button class="send-btn" id="sendBtn">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2">
+                                    <path d="M22 2L11 13"/>
+                                    <path d="M22 2l-7 20-4-9-9-4 20-7z"/>
+                                </svg>
+                            </button>
+                            <button class="stop-btn" id="stopBtn" style="display: none;">
+                                <svg width="22" height="22" viewBox="0 0 24 24" fill="currentColor">
+                                    <rect x="6" y="6" width="12" height="12" rx="2"/>
+                                </svg>
+                            </button>
+                        </div>
+                    </div>
+                </div>
+                <div class="input-footer">
+                    <span>GLM-5 يمكنه ارتكاب الأخطاء. تحقق من المعلومات المهمة.</span>
+                </div>
+            </div>
+        </main>
     </div>
-
-    <div class="input-area">
-        <div class="input-wrapper">
-            <textarea id="userInput" rows="1" placeholder="اكتب رسالتك هنا... (GLM-5 سيستمع إليك)" aria-label="رسالة الدردشة"></textarea>
-            <button id="sendButton" class="send-btn" aria-label="إرسال">
-                <svg width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                    <line x1="22" y1="2" x2="11" y2="13"></line>
-                    <polygon points="22 2 15 22 11 13 2 9 22 2"></polygon>
-                </svg>
-            </button>
-            <button id="stopButton" class="send-btn stop-btn" style="display: none;" aria-label="إيقاف">
-                <svg width="16" height="16" viewBox="0 0 24 24" fill="currentColor">
-                    <rect x="6" y="6" width="12" height="12"></rect>
-                </svg>
-            </button>
-        </div>
-        <div class="footer-note">
-            GLM-5 متطور – ردود آنية وتفكير عميق. قد تكون بعض الإجابات تجريبية.
-        </div>
-    </div>
-</div>
-
-<script>
-    (function() {
-        // DOM elements
-        const messagesContainer = document.getElementById('messagesList');
-        const userInput = document.getElementById('userInput');
-        const sendBtn = document.getElementById('sendButton');
-        const stopBtn = document.getElementById('stopButton');
-        const clearChatBtn = document.getElementById('clearChat');
-        const themeToggle = document.getElementById('themeToggle');
-
-        let currentAbortController = null;      // للتحكم في إلغاء الطلب
-        let isStreaming = false;
-        let currentAssistantMessageDiv = null;   // عنصر الرسالة الحالي الذي يتم كتابته
-        let currentThinkingDiv = null;
-
-        // ========== إدارة الوضع الداكن / الفاتح ==========
-        function initTheme() {
-            const saved = localStorage.getItem('glm_theme');
-            if (saved === 'light') {
-                document.body.classList.add('light');
-                themeToggle.innerHTML = '☀️';
-            } else {
-                document.body.classList.remove('light');
-                themeToggle.innerHTML = '🌙';
-            }
-        }
-        themeToggle.addEventListener('click', () => {
-            if (document.body.classList.contains('light')) {
-                document.body.classList.remove('light');
-                localStorage.setItem('glm_theme', 'dark');
-                themeToggle.innerHTML = '🌙';
-            } else {
-                document.body.classList.add('light');
-                localStorage.setItem('glm_theme', 'light');
-                themeToggle.innerHTML = '☀️';
-            }
-        });
-        initTheme();
-
-        // ========== مساعدات ==========
-        function scrollToBottom() {
-            const container = document.getElementById('chatContainer');
-            container.scrollTop = container.scrollHeight;
-        }
-
-        // إظهار مؤشر "يكتب..."
-        let typingIndicator = null;
-        function showTypingIndicator() {
-            if (typingIndicator) typingIndicator.remove();
-            const div = document.createElement('div');
-            div.className = 'message assistant typing-message';
-            div.innerHTML = `
-                <div class="message-avatar">🤖</div>
-                <div class="typing-indicator">
-                    <span></span><span></span><span></span>
-                </div>
-            `;
-            messagesContainer.appendChild(div);
-            typingIndicator = div;
-            scrollToBottom();
-        }
-        function removeTypingIndicator() {
-            if (typingIndicator) {
-                typingIndicator.remove();
-                typingIndicator = null;
-            }
-        }
-
-        // إضافة رسالة جديدة (user أو placeholder assistant)
-        function addUserMessage(text) {
-            const div = document.createElement('div');
-            div.className = 'message user';
-            div.innerHTML = `
-                <div class="message-avatar">👤</div>
-                <div class="message-content">${escapeHtml(text)}</div>
-            `;
-            messagesContainer.appendChild(div);
-            scrollToBottom();
-        }
-
-        function createAssistantMessagePlaceholder() {
-            const div = document.createElement('div');
-            div.className = 'message assistant';
-            div.innerHTML = `
-                <div class="message-avatar">🤖</div>
-                <div class="message-content">
-                    <div class="reply-text"></div>
-                    <div class="thinking" style="display: none;"></div>
-                </div>
-            `;
-            messagesContainer.appendChild(div);
-            return div;
-        }
-
-        // تحديث نص التفكير والرد بشكل تدريجي
-        function updateAssistantStream(assistantDiv, thinkingText, contentText) {
-            const thinkingDiv = assistantDiv.querySelector('.thinking');
-            const replyDiv = assistantDiv.querySelector('.reply-text');
-            if (thinkingText && thinkingText.length > 0) {
-                thinkingDiv.style.display = 'block';
-                thinkingDiv.innerText = `🧠 تفكير: ${thinkingText}`;
-            } else {
-                thinkingDiv.style.display = 'none';
-            }
-            if (contentText) {
-                // استخدام markdown بسيط أو نص عادي – عرض أنيق
-                replyDiv.innerHTML = markedInline(contentText); // وظيفة بسيطة بديلة
-            }
-            scrollToBottom();
-        }
-
-        // دالة بديلة لتحويل النص العادي إلى HTML (مع فواصل أسطر)
-        function markedInline(text) {
-            if (!text) return '';
-            // تحويل النص العادي إلى فقرات مع الحفاظ على الخط الجديد
-            return text.replace(/\n/g, '<br>').replace(/\*\*(.*?)\*\*/g, '<strong>$1</strong>');
-        }
-
-        function escapeHtml(str) {
-            if (!str) return '';
-            return str.replace(/[&<>]/g, function(m) {
-                if (m === '&') return '&amp;';
-                if (m === '<') return '&lt;';
-                if (m === '>') return '&gt;';
-                return m;
-            }).replace(/[\uD800-\uDBFF][\uDC00-\uDFFF]/g, function(c) {
-                return c;
-            });
-        }
-
-        // ========== طلب الدردشة مع التدفق (SSE عبر fetch + ReadableStream) ==========
-        async function sendMessage(message) {
-            if (isStreaming) return;
-            if (!message.trim()) return;
-
-            // إضافة رسالة المستخدم
-            addUserMessage(message);
-            userInput.value = '';
-            userInput.style.height = 'auto';
-
-            // تحضير واجهة الرد
-            removeTypingIndicator();
-            const assistantMsgDiv = createAssistantMessagePlaceholder();
-            currentAssistantMessageDiv = assistantMsgDiv;
-            isStreaming = true;
-            sendBtn.disabled = true;
-            stopBtn.style.display = 'flex';
-            sendBtn.style.display = 'none';
-
-            let fullContent = '';
-            let fullThinking = '';
-            let finalThinking = '';
-            let finalContent = '';
-
-            // إلغاء أي طلب سابق
-            if (currentAbortController) {
-                currentAbortController.abort();
-            }
-            const abortController = new AbortController();
-            currentAbortController = abortController;
-
-            try {
-                const response = await fetch('/api/chat', {
-                    method: 'POST',
-                    headers: { 'Content-Type': 'application/json' },
-                    body: JSON.stringify({
-                        message: message,
-                        session_id: 'web_session_' + (localStorage.getItem('glm_session') || 'default'),
-                        agent_mode: true,
-                        stream: true
-                    }),
-                    signal: abortController.signal
-                });
-
-                if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                if (!response.body) throw new Error('No response body');
-
-                const reader = response.body.getReader();
-                const decoder = new TextDecoder();
-
-                let buffer = '';
-                while (true) {
-                    const { done, value } = await reader.read();
-                    if (done) break;
-                    buffer += decoder.decode(value, { stream: true });
-                    const lines = buffer.split('\n');
-                    buffer = lines.pop();
-
-                    for (const line of lines) {
-                        if (line.startsWith('data: ')) {
-                            const data = line.slice(6);
-                            if (data === '[DONE]') {
-                                // انتهى التدفق
-                                break;
-                            }
-                            try {
-                                const parsed = JSON.parse(data);
-                                if (parsed.type === 'thinking' && parsed.content) {
-                                    fullThinking += parsed.content;
-                                    updateAssistantStream(assistantMsgDiv, fullThinking, fullContent);
-                                } else if (parsed.type === 'content' && parsed.content) {
-                                    fullContent += parsed.content;
-                                    updateAssistantStream(assistantMsgDiv, fullThinking, fullContent);
-                                }
-                            } catch (e) { /* تجاهل */ }
-                        }
-                    }
-                }
-
-                // بعد انتهاء الرد, التأكد من عرض النهائي
-                updateAssistantStream(assistantMsgDiv, fullThinking, fullContent);
-            } catch (err) {
-                if (err.name !== 'AbortError') {
-                    console.error(err);
-                    assistantMsgDiv.querySelector('.reply-text').innerHTML = '<span style="color: var(--danger);">⚠️ حدث خطأ أثناء معالجة الطلب. حاول مرة أخرى.</span>';
-                } else {
-                    assistantMsgDiv.querySelector('.reply-text').innerHTML = '<span style="color: var(--text-muted);">⏸️ تم إيقاف التوليد.</span>';
-                }
-                scrollToBottom();
-            } finally {
-                isStreaming = false;
-                currentAbortController = null;
-                sendBtn.disabled = false;
-                stopBtn.style.display = 'none';
-                sendBtn.style.display = 'flex';
-                currentAssistantMessageDiv = null;
-                userInput.focus();
-            }
-        }
-
-        // دالة الإيقاف
-        function stopGeneration() {
-            if (currentAbortController) {
-                currentAbortController.abort();
-                isStreaming = false;
-                sendBtn.disabled = false;
-                stopBtn.style.display = 'none';
-                sendBtn.style.display = 'flex';
-                if (currentAssistantMessageDiv) {
-                    const replyDiv = currentAssistantMessageDiv.querySelector('.reply-text');
-                    const currentText = replyDiv.innerText;
-                    if (!currentText.trim()) {
-                        replyDiv.innerHTML = '<span style="color: var(--text-muted);">⏹️ توقف المستخدم عن التوليد.</span>';
-                    }
-                }
-                removeTypingIndicator();
-            }
-        }
-
-        // مسح المحادثة (إبقاء الترحيب)
-        function clearConversation() {
-            if (isStreaming) stopGeneration();
-            messagesContainer.innerHTML = '';
-            const welcomeDiv = document.createElement('div');
-            welcomeDiv.className = 'message assistant';
-            welcomeDiv.innerHTML = `
-                <div class="message-avatar">🤖</div>
-                <div class="message-content">
-                    تم مسح المحادثة. كيف يمكنني مساعدتك الآن؟
-                </div>
-            `;
-            messagesContainer.appendChild(welcomeDiv);
-            // إنشاء session جديدة (محلياً)
-            const newSessionId = 'web_' + Date.now() + '_' + Math.random().toString(36);
-            localStorage.setItem('glm_session', newSessionId);
-            scrollToBottom();
-        }
-
-        // Event listeners
-        sendBtn.addEventListener('click', () => {
-            const msg = userInput.value.trim();
-            if (msg && !isStreaming) sendMessage(msg);
-        });
-        stopBtn.addEventListener('click', stopGeneration);
-        clearChatBtn.addEventListener('click', clearConversation);
-        userInput.addEventListener('keydown', (e) => {
-            if (e.key === 'Enter' && !e.shiftKey) {
-                e.preventDefault();
-                if (!isStreaming && userInput.value.trim()) sendMessage(userInput.value.trim());
-            }
-        });
-        // auto resize textarea
-        userInput.addEventListener('input', function() {
-            this.style.height = 'auto';
-            this.style.height = Math.min(this.scrollHeight, 150) + 'px';
-        });
-
-        // تعيين session معرف للمستخدم (ثابت نسبياً)
-        if (!localStorage.getItem('glm_session')) {
-            localStorage.setItem('glm_session', 'web_' + Date.now());
-        }
-
-        // تأكيد عدم فقدان التركيز
-        userInput.focus();
-    })();
-</script>
+    
+    <div class="toast" id="toast"></div>
+    
+    <script src="/script.js"></script>
 </body>
 </html>
