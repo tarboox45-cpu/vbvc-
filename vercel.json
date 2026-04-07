@@ -2,12 +2,25 @@
   "functions": {
     "api/chat.js": {
       "maxDuration": 60
+    },
+    "api/generate-site.js": {
+      "maxDuration": 60
+    },
+    "api/upload.js": {
+      "maxDuration": 30
+    },
+    "api/conversations.js": {
+      "maxDuration": 10
     }
   },
   "rewrites": [
     {
+      "source": "/preview/:id",
+      "destination": "/api/generate-site?id=:id"
+    },
+    {
       "source": "/(.*)",
-      "destination": "/public/index.html"
+      "destination": "/index.html"
     }
   ],
   "headers": [
