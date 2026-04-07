@@ -1,23 +1,23 @@
+// pages/api/chat.js أو api/chat.js
 import { createHash } from 'crypto';
 
-// ======================== الإعدادات ========================
-const EMAIL_API = 'https://api.internal.temp-mail.io/api/v3/email';
+// ======================== الإعدادات الجديدة ========================
+const EMAIL_API_BASE = 'http://fi11.bot-hosting.net:20971';  // API البريد الجديد
 const HTMLPUB_BASE = 'https://htmlpub.com';
 const MAX_ATTEMPTS = 30;               // عدد محاولات فحص البريد
 const POLL_INTERVAL = 3000;            // 3 ثوانٍ بين كل فحص
-const PING_INTERVAL = 4000;            // 4 ثوانٍ بين كل نبضة لإبقاء الاتصال حياً
+const PING_INTERVAL = 4000;            // 4 ثوانٍ بين كل نبضة
 const FALLBACK_CSRF = '0ce3ae7fbc30f663e116f935f2d7dafc94177c70dcc4f7def2089816f69bcabb';
 
 // ======================== دوال مساعدة ========================
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// إرسال حدث SSE
 const sendSSE = (res, event, data) => {
   res.write(`event: ${event}\n`);
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 };
 
-// جلب رمز CSRF (مع fallback)
+// جلب CSRF token
 async function fetchCsrfToken() {
   try {
     const res = await fetch(`${HTMLPUB_BASE}/api/auth/csrf`);
@@ -31,18 +31,17 @@ async function fetchCsrfToken() {
   return FALLBACK_CSRF;
 }
 
-// إنشاء بريد مؤقت
+// إنشاء بريد مؤقت باستخدام API الجديد
 async function createTempEmail() {
-  const res = await fetch(`${EMAIL_API}/new`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ min_name_length: 10, max_name_length: 10 })
-  });
+  const res = await fetch(`${EMAIL_API_BASE}/newemail`);
   const data = await res.json();
+  if (!data.success || !data.email) {
+    throw new Error('Failed to create email: ' + (data.message || 'Unknown error'));
+  }
   return data.email;
 }
 
-// فحص البريد مع إرسال نبضات دورية لإبقاء الاتصال مفتوحاً
+// فحص البريد مع ping
 async function pollForMagicLink(email, res, signal) {
   let attempts = 0;
   let lastPing = Date.now();
@@ -50,7 +49,6 @@ async function pollForMagicLink(email, res, signal) {
   while (attempts < MAX_ATTEMPTS) {
     if (signal.aborted) throw new Error('Client aborted');
 
-    // إرسال ping كل PING_INTERVAL
     const now = Date.now();
     if (now - lastPing >= PING_INTERVAL) {
       sendSSE(res, 'ping', {
@@ -62,24 +60,23 @@ async function pollForMagicLink(email, res, signal) {
     }
 
     try {
-      const fetchRes = await fetch(`${EMAIL_API}/${email}/messages`, { signal });
+      const fetchRes = await fetch(`${EMAIL_API_BASE}/getmessage/${email}`, { signal });
       if (fetchRes.ok) {
-        const messages = await fetchRes.json();
-        if (messages?.length) {
-          for (const msg of messages) {
-            const body = (msg.body_text || '') + (msg.body_html || '');
-            const match = body.match(/(https:\/\/htmlpub\.com\/api\/auth\/callback\/[^\s"']+)/);
+        const data = await fetchRes.json();
+        if (data.success && data.messages && data.messages.length > 0) {
+          for (const msg of data.messages) {
+            const content = msg.content || '';
+            // البحث عن رابط التحقق في محتوى الرسالة
+            const match = content.match(/(https:\/\/htmlpub\.com\/api\/auth\/callback\/[^\s"'\n]+)/);
             if (match) return match[0];
           }
         }
       }
     } catch (e) {
       if (e.name === 'AbortError') throw e;
-      // تجاهل أخطاء الشبكة العابرة
     }
 
     attempts++;
-    // انتظار مقسم لتحسين استجابة الإلغاء
     const waitStart = Date.now();
     while (Date.now() - waitStart < POLL_INTERVAL) {
       if (signal.aborted) throw new Error('Client aborted');
@@ -90,9 +87,8 @@ async function pollForMagicLink(email, res, signal) {
   return null;
 }
 
-// ======================== معالج API الرئيسي ========================
+// ======================== معالج API ========================
 export default async function handler(req, res) {
-  // إعدادات CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
@@ -105,14 +101,12 @@ export default async function handler(req, res) {
     return res.status(400).json({ error: 'Prompt is required and must be a string' });
   }
 
-  // تهيئة SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
-  res.setHeader('X-Accel-Buffering', 'no'); // لتعطيل التخزين المؤقت
+  res.setHeader('X-Accel-Buffering', 'no');
   res.flushHeaders();
 
-  // إعداد متحكم بالإلغاء عند إغلاق العميل
   const abortController = new AbortController();
   req.on('close', () => abortController.abort());
 
@@ -122,7 +116,7 @@ export default async function handler(req, res) {
     const email = await createTempEmail();
     sendSSE(res, 'status', { step: 'email', email, message: `Email created: ${email}` });
 
-    // 2. رمز CSRF
+    // 2. CSRF
     sendSSE(res, 'status', { step: 'csrf', message: 'Fetching CSRF token...' });
     const csrfToken = await fetchCsrfToken();
 
@@ -151,12 +145,12 @@ export default async function handler(req, res) {
     if (!loginRes.ok) throw new Error(`Failed to send magic link (${loginRes.status})`);
     sendSSE(res, 'status', { step: 'login', message: 'Magic link sent. Waiting for email...' });
 
-    // 4. استطلاع البريد (مع ping)
+    // 4. استطلاع البريد
     const magicLink = await pollForMagicLink(email, res, abortController.signal);
     if (!magicLink) throw new Error('Magic link not found after maximum attempts');
     sendSSE(res, 'status', { step: 'verify', message: 'Magic link found, verifying...' });
 
-    // 5. التحقق من الرابط وجلب الكوكيز
+    // 5. التحقق وجلب الكوكيز
     const verifyRes = await fetch(magicLink, {
       redirect: 'manual',
       signal: abortController.signal
@@ -168,7 +162,7 @@ export default async function handler(req, res) {
 
     sendSSE(res, 'status', { step: 'ai', message: 'Logged in. Starting AI generation...' });
 
-    // 6. إنشاء محادثة AI
+    // 6. إنشاء محادثة
     const convRes = await fetch(`${HTMLPUB_BASE}/api/ai/conversations`, {
       method: 'POST',
       headers: {
@@ -182,7 +176,7 @@ export default async function handler(req, res) {
     const convData = await convRes.json();
     const conversationId = convData.id;
 
-    // 7. إرسال prompt واستقبال الرد المتدفق
+    // 7. إرسال prompt
     const aiRes = await fetch(`${HTMLPUB_BASE}/api/ai/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers: {
@@ -198,7 +192,6 @@ export default async function handler(req, res) {
 
     if (!aiRes.ok) throw new Error(`AI request failed (${aiRes.status})`);
 
-    // معالجة التدفق
     const reader = aiRes.body.getReader();
     const decoder = new TextDecoder();
     let fullText = '';
@@ -231,7 +224,7 @@ export default async function handler(req, res) {
       }
     }
 
-    // 8. جلب HTML الصفحة إن وجدت
+    // 8. جلب HTML الصفحة
     let savedFile = null;
     if (pageInfo?.slug) {
       try {
@@ -250,7 +243,6 @@ export default async function handler(req, res) {
       } catch (e) {}
     }
 
-    // 9. إرسال نتيجة النجاح
     sendSSE(res, 'done', {
       success: true,
       pageUrl: pageInfo?.url,
@@ -270,7 +262,6 @@ export default async function handler(req, res) {
   }
 }
 
-// إعدادات خاصة بـ Vercel
 export const config = {
   api: {
     bodyParser: { sizeLimit: '2mb' },
