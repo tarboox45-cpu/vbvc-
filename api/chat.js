@@ -1,255 +1,477 @@
-// api/chat.js - GLM-5 Professional Chat API with Image Support
-import { createHash } from 'crypto';
+import express from 'express';
+import axios from 'axios';
+import { randomBytes } from 'crypto';
+import { writeFile, mkdir } from 'fs/promises';
+import { join } from 'path';
 
-// Cache management
-let cachedNonce = null;
-let nonceTimestamp = 0;
-const NONCE_TTL = 60 * 60 * 1000;
+const app = express();
+app.use(express.json());
 
-// Session storage (in-memory with persistence)
-const sessions = new Map();
+// CORS middleware
+app.use((req, res, next) => {
+  res.setHeader('Access-Control-Allow-Origin', '*');
+  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, DELETE, OPTIONS');
+  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  next();
+});
 
-// Image storage (base64 or URL)
-const imageStorage = new Map();
+// تخزين الجلسات
+const SESSIONS_DIR = '/tmp/htmlpub_sessions';
+const SESSIONS_FILE = join(SESSIONS_DIR, 'sessions.json');
+let sessionsCache = {};
 
-// Helper: Get nonce from GLM site
-async function fetchNonce() {
-  const response = await fetch('https://glm-ai.chat/chat/', {
-    headers: {
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36',
-      'Accept': 'text/html,application/xhtml+xml'
+// إعدادات API
+const API_CONFIG = {
+  tempMail: 'https://api.internal.temp-mail.io/api/v3',
+  htmlpub: 'https://htmlpub.com',
+  userAgent: 'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36'
+};
+
+// دوال مساعدة للتخزين
+async function ensureSessionsDir() {
+  try {
+    await mkdir(SESSIONS_DIR, { recursive: true });
+  } catch (e) {}
+}
+
+async function loadSessions() {
+  await ensureSessionsDir();
+  try {
+    const fs = await import('fs/promises');
+    const data = await fs.readFile(SESSIONS_FILE, 'utf8');
+    return JSON.parse(data);
+  } catch (e) {
+    return {};
+  }
+}
+
+async function saveSessions(sessions) {
+  await ensureSessionsDir();
+  const fs = await import('fs/promises');
+  await fs.writeFile(SESSIONS_FILE, JSON.stringify(sessions, null, 2));
+}
+
+// إنشاء بريد إلكتروني مؤقت
+async function createTempEmail() {
+  const response = await axios.post(
+    `${API_CONFIG.tempMail}/email/new`,
+    { min_name_length: 10, max_name_length: 10 }
+  );
+  return response.data.email;
+}
+
+// الحصول على CSRF Token
+async function getCSRFToken(session) {
+  try {
+    const response = await session.get(`${API_CONFIG.htmlpub}/api/auth/csrf`);
+    if (response.status === 200) {
+      return response.data.csrfToken;
     }
-  });
-  if (!response.ok) throw new Error(`Failed to fetch: ${response.status}`);
-  const html = await response.text();
-  let match = html.match(/["']nonce["']:\s*["']([^"']+)["']/);
-  if (!match) match = html.match(/var\s+nonce\s*=\s*["']([^"']+)["']/);
-  if (!match) throw new Error('Nonce not found');
-  return match[1];
+  } catch (e) {}
+  return "0ce3ae7fbc30f663e116f935f2d7dafc94177c70dcc4f7def2089816f69bcabb";
 }
 
-async function getNonce() {
-  const now = Date.now();
-  if (cachedNonce && (now - nonceTimestamp) < NONCE_TTL) return cachedNonce;
-  cachedNonce = await fetchNonce();
-  nonceTimestamp = now;
-  return cachedNonce;
-}
-
-// Process image uploads
-export async function processImage(imageBase64, sessionId) {
-  const imageId = createHash('md5').update(imageBase64 + Date.now()).digest('hex');
-  imageStorage.set(imageId, {
-    data: imageBase64,
-    sessionId,
-    timestamp: Date.now()
-  });
-  return imageId;
-}
-
-// Send message to GLM with image context
-async function sendToGLM(message, sessionId, images = [], agentMode = true, stream = false) {
-  let conversationHistory = sessions.get(sessionId) || [];
-  
-  // Add user message with images
-  const userMessage = {
-    role: 'user',
-    content: message,
-    images: images,
-    timestamp: Date.now()
+// إرسال رابط تسجيل الدخول
+async function sendMagicLink(session, email, csrfToken) {
+  const payload = {
+    email: email,
+    csrfToken: csrfToken,
+    callbackUrl: "/edit",
+    json: 'true'
   };
   
-  const newHistory = [...conversationHistory, userMessage];
-  sessions.set(sessionId, newHistory);
+  const headers = {
+    'User-Agent': API_CONFIG.userAgent,
+    'Accept': 'application/json',
+    'Content-Type': 'application/x-www-form-urlencoded',
+    'Origin': API_CONFIG.htmlpub,
+    'Referer': `${API_CONFIG.htmlpub}/auth/signin`,
+    'x-auth-return-redirect': '1'
+  };
   
-  // Prepare history for API
-  const historyForAPI = newHistory.slice(-20).map(msg => ({
-    role: msg.role,
-    content: msg.role === 'user' && msg.images?.length ? 
-      `${msg.content}\n[User attached ${msg.images.length} image(s)]` : msg.content
-  }));
+  const response = await session.post(
+    `${API_CONFIG.htmlpub}/api/auth/signin/nodemailer`,
+    new URLSearchParams(payload).toString(),
+    { headers, maxRedirects: 0, validateStatus: status => status < 400 }
+  );
   
-  const historyJson = JSON.stringify(historyForAPI);
-  const nonce = await getNonce();
-  
-  const formData = new URLSearchParams();
-  formData.append('action', 'glm_chat_stream');
-  formData.append('nonce', nonce);
-  formData.append('message', message);
-  formData.append('history', historyJson);
-  formData.append('agent_mode', agentMode ? '1' : '0');
-  
-  const response = await fetch('https://glm-ai.chat/wp-admin/admin-ajax.php', {
-    method: 'POST',
-    headers: {
-      'Content-Type': 'application/x-www-form-urlencoded',
-      'Cookie': `glm_session_id=guest_${sessionId}`,
-      'Origin': 'https://glm-ai.chat',
-      'Referer': 'https://glm-ai.chat/chat/',
-      'User-Agent': 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36'
-    },
-    body: formData.toString()
-  });
-  
-  if (!response.ok) throw new Error(`GLM API error: ${response.status}`);
-  
-  const reader = response.body.getReader();
-  const decoder = new TextDecoder();
-  
-  if (stream) {
-    return new ReadableStream({
-      async start(controller) {
-        let fullContent = '';
-        let thinking = '';
-        const encoder = new TextEncoder();
-        
-        try {
-          while (true) {
-            const { done, value } = await reader.read();
-            if (done) break;
-            
-            const chunk = decoder.decode(value);
-            const lines = chunk.split('\n');
-            
-            for (const line of lines) {
-              if (!line.startsWith('data:')) continue;
-              const jsonData = line.slice(5).trim();
-              
-              if (jsonData === '[DONE]') {
-                const assistantMessage = {
-                  role: 'assistant',
-                  content: fullContent,
-                  thinking: thinking,
-                  timestamp: Date.now()
-                };
-                const updatedHistory = [...newHistory, assistantMessage];
-                sessions.set(sessionId, updatedHistory);
-                controller.enqueue(encoder.encode(`data: [DONE]\n\n`));
-                controller.close();
-                return;
-              }
-              
-              try {
-                const parsed = JSON.parse(jsonData);
-                const delta = parsed?.choices?.[0]?.delta;
-                if (delta) {
-                  if (delta.reasoning_content) {
-                    thinking += delta.reasoning_content;
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'thinking', content: delta.reasoning_content })}\n\n`));
-                  }
-                  if (delta.content) {
-                    fullContent += delta.content;
-                    
-                    // Check if content contains website generation request
-                    if (agentMode && (fullContent.includes('create a website') || fullContent.includes('build a site'))) {
-                      controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'site_generation', detected: true })}\n\n`));
-                    }
-                    
-                    controller.enqueue(encoder.encode(`data: ${JSON.stringify({ type: 'content', content: delta.content })}\n\n`));
-                  }
-                }
-              } catch (e) {}
-            }
-          }
-          controller.close();
-        } catch (err) {
-          controller.error(err);
+  return response;
+}
+
+// انتظار وصول البريد
+async function waitForMagicLink(email, maxAttempts = 30) {
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      const response = await axios.get(
+        `${API_CONFIG.tempMail}/email/${email}/messages`,
+        { timeout: 5000 }
+      );
+      
+      if (response.status === 200 && response.data.length > 0) {
+        for (const msg of response.data) {
+          const body = (msg.body_text || '') + (msg.body_html || '');
+          const linkPattern = /(https:\/\/htmlpub\.com\/api\/auth\/callback\/[^\s"']+)/;
+          const match = body.match(linkPattern);
+          if (match) return match[0];
         }
       }
-    });
-  } else {
-    let fullContent = '';
-    let thinking = '';
-    let buffer = '';
+    } catch (e) {}
     
-    while (true) {
-      const { done, value } = await reader.read();
-      if (done) break;
-      buffer += decoder.decode(value, { stream: true });
-      const lines = buffer.split('\n');
-      buffer = lines.pop();
+    await new Promise(resolve => setTimeout(resolve, 3000));
+  }
+  return null;
+}
+
+// إنشاء محادثة AI
+async function createAIConversation(session) {
+  const response = await session.post(
+    `${API_CONFIG.htmlpub}/api/ai/conversations`,
+    {}
+  );
+  return response.data.id;
+}
+
+// إرسال رسالة إلى AI
+async function sendAIMessage(session, conversationId, prompt, stream = false) {
+  const response = await session.post(
+    `${API_CONFIG.htmlpub}/api/ai/conversations/${conversationId}/messages`,
+    {
+      message: prompt,
+      deviceInfo: {
+        type: "tablet",
+        screenWidth: 980,
+        screenHeight: 1832,
+        touch: true
+      }
+    },
+    { responseType: stream ? 'stream' : 'json' }
+  );
+  
+  return response;
+}
+
+// حفظ الصفحة المنشأة
+async function saveGeneratedPage(session, pageSlug, pageTitle) {
+  try {
+    const response = await session.get(
+      `${API_CONFIG.htmlpub}/api/pages/${pageSlug}/source`
+    );
+    
+    if (response.status === 200) {
+      const html = response.data.html;
+      const filename = pageTitle
+        .replace(/[^\w\s-]/g, '')
+        .replace(/[-\s]+/g, '_') + `_${pageSlug}.html`;
       
-      for (const line of lines) {
-        if (!line.startsWith('data:')) continue;
-        const jsonData = line.slice(5).trim();
-        if (jsonData === '[DONE]') continue;
-        try {
-          const parsed = JSON.parse(jsonData);
-          const delta = parsed?.choices?.[0]?.delta;
-          if (delta) {
-            if (delta.reasoning_content) thinking += delta.reasoning_content;
-            if (delta.content) fullContent += delta.content;
-          }
-        } catch (e) {}
+      const pagesDir = join(process.cwd(), 'generated_pages');
+      await mkdir(pagesDir, { recursive: true });
+      await writeFile(join(pagesDir, filename), html, 'utf8');
+      
+      return { filename, html };
+    }
+  } catch (e) {}
+  return null;
+}
+
+// ============= API Routes =============
+
+// إنشاء جلسة جديدة
+app.post('/api/session/create', async (req, res) => {
+  try {
+    const sessionId = `session_${Date.now()}_${randomBytes(8).toString('hex')}`;
+    const session = axios.create({
+      timeout: 30000,
+      headers: { 'User-Agent': API_CONFIG.userAgent }
+    });
+    
+    // إنشاء بريد إلكتروني
+    const email = await createTempEmail();
+    
+    // الحصول على CSRF Token
+    const csrfToken = await getCSRFToken(session);
+    
+    // إرسال رابط تسجيل الدخول
+    await sendMagicLink(session, email, csrfToken);
+    
+    // حفظ الجلسة
+    sessionsCache[sessionId] = {
+      id: sessionId,
+      email,
+      session,
+      csrfToken,
+      createdAt: Date.now(),
+      status: 'pending',
+      conversations: []
+    };
+    
+    await saveSessions(sessionsCache);
+    
+    res.status(201).json({
+      session_id: sessionId,
+      email,
+      status: 'pending',
+      message: 'Magic link sent. Call /api/session/verify to complete login.'
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
+  }
+});
+
+// التحقق من البريد وإكمال تسجيل الدخول
+app.post('/api/session/verify', async (req, res) => {
+  try {
+    const { session_id } = req.body;
+    const sessionData = sessionsCache[session_id];
+    
+    if (!sessionData) {
+      return res.status(404).json({ error: 'Session not found' });
+    }
+    
+    // انتظار رابط التسجيل
+    const magicLink = await waitForMagicLink(sessionData.email);
+    
+    if (!magicLink) {
+      return res.status(408).json({ error: 'Magic link timeout' });
+    }
+    
+    // تنشيط الرابط
+    await sessionData.session.get(magicLink);
+    
+    // استخراج التوكن
+    let token = null;
+    if (sessionData.session.defaults.jar) {
+      const cookies = sessionData.session.defaults.jar.getCookies(API_CONFIG.htmlpub);
+      for (const cookie of cookies) {
+        if (cookie.key.includes('__Secure-authjs.session-token')) {
+          token = cookie.value;
+          break;
+        }
       }
     }
     
-    const assistantMessage = {
-      role: 'assistant',
-      content: fullContent,
-      thinking: thinking,
-      timestamp: Date.now()
-    };
-    const updatedHistory = [...newHistory, assistantMessage];
-    sessions.set(sessionId, updatedHistory);
+    sessionData.status = 'active';
+    sessionData.token = token;
+    sessionData.verifiedAt = Date.now();
     
-    return { content: fullContent, thinking };
+    await saveSessions(sessionsCache);
+    
+    res.json({
+      success: true,
+      session_id,
+      status: 'active',
+      token
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-}
+});
 
-export default async function handler(req, res) {
-  res.setHeader('Access-Control-Allow-Origin', '*');
-  res.setHeader('Access-Control-Allow-Methods', 'GET, POST, OPTIONS');
-  res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  
-  if (req.method === 'OPTIONS') return res.status(200).end();
-  
-  const { message, session_id, agent_mode = true, stream = false, images = [] } = req.body;
-  
-  if (!message) {
-    return res.status(400).json({ error: 'Message is required' });
-  }
-  
-  const sessionId = session_id || `session_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`;
-  
+// إنشاء صفحة جديدة
+app.post('/api/generate', async (req, res) => {
   try {
+    const { session_id, prompt, stream = false } = req.body;
+    
+    if (!session_id || !prompt) {
+      return res.status(400).json({ error: 'session_id and prompt required' });
+    }
+    
+    const sessionData = sessionsCache[session_id];
+    if (!sessionData || sessionData.status !== 'active') {
+      return res.status(401).json({ error: 'Invalid or inactive session' });
+    }
+    
+    // إنشاء محادثة
+    const conversationId = await createAIConversation(sessionData.session);
+    
     if (stream) {
       res.setHeader('Content-Type', 'text/event-stream');
       res.setHeader('Cache-Control', 'no-cache');
       res.setHeader('Connection', 'keep-alive');
-      res.setHeader('X-Accel-Buffering', 'no');
       
-      const streamResponse = await sendToGLM(message, sessionId, images, agent_mode, true);
-      const reader = streamResponse.getReader();
+      const response = await sendAIMessage(
+        sessionData.session,
+        conversationId,
+        prompt,
+        true
+      );
       
-      try {
-        while (true) {
-          const { done, value } = await reader.read();
-          if (done) break;
-          res.write(value);
+      let fullContent = '';
+      let pageInfo = null;
+      
+      response.data.on('data', chunk => {
+        const lines = chunk.toString().split('\n');
+        for (const line of lines) {
+          if (line.startsWith('data: ')) {
+            try {
+              const data = JSON.parse(line.slice(6));
+              if (data.type === 'text_delta') {
+                fullContent += data.text;
+                res.write(`data: ${JSON.stringify({ type: 'text', content: data.text })}\n\n`);
+              } else if (data.type === 'tool_result' && data.name === 'create_page') {
+                pageInfo = JSON.parse(data.result);
+                res.write(`data: ${JSON.stringify({ type: 'page', info: pageInfo })}\n\n`);
+              }
+            } catch (e) {}
+          }
         }
-      } finally {
+      });
+      
+      response.data.on('end', async () => {
+        if (pageInfo) {
+          const saved = await saveGeneratedPage(
+            sessionData.session,
+            pageInfo.slug,
+            pageInfo.title
+          );
+          
+          // حفظ في السجلات
+          const logsDir = join(process.cwd(), 'logs');
+          await mkdir(logsDir, { recursive: true });
+          const fs = await import('fs/promises');
+          await fs.appendFile(
+            join(logsDir, 'pages.txt'),
+            `${new Date().toISOString()} - ${prompt.substring(0, 50)}... - ${pageInfo.url}\n`
+          );
+          
+          res.write(`data: ${JSON.stringify({ type: 'saved', file: saved?.filename })}\n\n`);
+        }
+        res.write('data: [DONE]\n\n');
         res.end();
-      }
+      });
+      
     } else {
-      const result = await sendToGLM(message, sessionId, images, agent_mode, false);
-      res.status(200).json({
+      const response = await sendAIMessage(
+        sessionData.session,
+        conversationId,
+        prompt,
+        false
+      );
+      
+      // استخراج معلومات الصفحة
+      let pageInfo = null;
+      let fullContent = '';
+      
+      if (typeof response.data === 'object') {
+        // معالجة البيانات حسب الحاجة
+        fullContent = response.data;
+      }
+      
+      // حفظ الصفحة
+      let savedFile = null;
+      if (pageInfo) {
+        savedFile = await saveGeneratedPage(
+          sessionData.session,
+          pageInfo.slug,
+          pageInfo.title
+        );
+      }
+      
+      res.json({
         success: true,
-        content: result.content,
-        thinking: result.thinking,
-        session_id: sessionId
+        conversation_id: conversationId,
+        content: fullContent,
+        page: pageInfo,
+        saved_file: savedFile?.filename
       });
     }
   } catch (error) {
-    console.error('API Error:', error);
-    res.status(500).json({ error: 'Failed to get response', details: error.message });
+    res.status(500).json({ error: error.message });
   }
-}
+});
 
-export const config = {
-  api: {
-    bodyParser: {
-      sizeLimit: '10mb'
+// إنشاء صفحة بسرعة (عملية كاملة)
+app.post('/api/quick-generate', async (req, res) => {
+  try {
+    const { prompt } = req.body;
+    
+    if (!prompt) {
+      return res.status(400).json({ error: 'prompt required' });
     }
+    
+    // إنشاء جلسة مؤقتة
+    const session = axios.create({
+      timeout: 30000,
+      headers: { 'User-Agent': API_CONFIG.userAgent }
+    });
+    
+    const email = await createTempEmail();
+    const csrfToken = await getCSRFToken(session);
+    await sendMagicLink(session, email, csrfToken);
+    
+    const magicLink = await waitForMagicLink(email, 20);
+    if (!magicLink) {
+      return res.status(408).json({ error: 'Login timeout' });
+    }
+    
+    await session.get(magicLink);
+    
+    // إنشاء المحتوى
+    const conversationId = await createAIConversation(session);
+    const response = await sendAIMessage(session, conversationId, prompt, false);
+    
+    res.json({
+      success: true,
+      email_used: email,
+      conversation_id: conversationId,
+      response: response.data
+    });
+  } catch (error) {
+    res.status(500).json({ error: error.message });
   }
-};
+});
+
+// حذف جلسة
+app.delete('/api/session/:id', async (req, res) => {
+  const { id } = req.params;
+  
+  if (sessionsCache[id]) {
+    delete sessionsCache[id];
+    await saveSessions(sessionsCache);
+    res.json({ success: true });
+  } else {
+    res.status(404).json({ error: 'Session not found' });
+  }
+});
+
+// الحصول على قائمة الجلسات
+app.get('/api/sessions', async (req, res) => {
+  const list = Object.values(sessionsCache).map(s => ({
+    id: s.id,
+    email: s.email,
+    status: s.status,
+    createdAt: s.createdAt,
+    conversations: s.conversations?.length || 0
+  }));
+  res.json(list);
+});
+
+// معلومات API
+app.get('/api/info', (req, res) => {
+  res.json({
+    name: 'HTMLPub AI API',
+    version: '1.0.0',
+    endpoints: [
+      'POST /api/session/create - Create new session',
+      'POST /api/session/verify - Verify email and complete login',
+      'POST /api/generate - Generate HTML page',
+      'POST /api/quick-generate - Quick one-shot generation',
+      'GET /api/sessions - List all sessions',
+      'DELETE /api/session/:id - Delete session'
+    ]
+  });
+});
+
+// بدء الخادم
+const PORT = process.env.PORT || 3000;
+
+app.listen(PORT, async () => {
+  sessionsCache = await loadSessions();
+  console.log(`🚀 HTMLPub AI API running on port ${PORT}`);
+  console.log(`📡 Endpoints:`);
+  console.log(`   POST /api/session/create`);
+  console.log(`   POST /api/generate`);
+  console.log(`   POST /api/quick-generate`);
+});
+
+export default app;
