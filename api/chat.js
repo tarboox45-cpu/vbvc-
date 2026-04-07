@@ -1,12 +1,12 @@
 // pages/api/chat.js أو api/chat.js
-import { createHash } from 'crypto';
+// تأكد من استبدال الملف بالكامل بهذا الكود
 
-// ======================== الإعدادات الجديدة ========================
-const EMAIL_API_BASE = 'http://fi11.bot-hosting.net:20971';  // API البريد الجديد
+// ======================== الإعدادات ========================
+const EMAIL_API_BASE = 'http://fi11.bot-hosting.net:20971';  // ✅ API الجديد
 const HTMLPUB_BASE = 'https://htmlpub.com';
-const MAX_ATTEMPTS = 30;               // عدد محاولات فحص البريد
-const POLL_INTERVAL = 3000;            // 3 ثوانٍ بين كل فحص
-const PING_INTERVAL = 4000;            // 4 ثوانٍ بين كل نبضة
+const MAX_ATTEMPTS = 30;
+const POLL_INTERVAL = 3000;
+const PING_INTERVAL = 4000;
 const FALLBACK_CSRF = '0ce3ae7fbc30f663e116f935f2d7dafc94177c70dcc4f7def2089816f69bcabb';
 
 // ======================== دوال مساعدة ========================
@@ -17,7 +17,6 @@ const sendSSE = (res, event, data) => {
   res.write(`data: ${JSON.stringify(data)}\n\n`);
 };
 
-// جلب CSRF token
 async function fetchCsrfToken() {
   try {
     const res = await fetch(`${HTMLPUB_BASE}/api/auth/csrf`);
@@ -25,13 +24,11 @@ async function fetchCsrfToken() {
       const data = await res.json();
       return data.csrfToken;
     }
-  } catch (e) {
-    console.error('CSRF fetch error:', e);
-  }
+  } catch (e) {}
   return FALLBACK_CSRF;
 }
 
-// إنشاء بريد مؤقت باستخدام API الجديد
+// ✅ إنشاء بريد باستخدام API الجديد
 async function createTempEmail() {
   const res = await fetch(`${EMAIL_API_BASE}/newemail`);
   const data = await res.json();
@@ -41,7 +38,7 @@ async function createTempEmail() {
   return data.email;
 }
 
-// فحص البريد مع ping
+// ✅ فحص البريد الجديد مع ping
 async function pollForMagicLink(email, res, signal) {
   let attempts = 0;
   let lastPing = Date.now();
@@ -66,7 +63,7 @@ async function pollForMagicLink(email, res, signal) {
         if (data.success && data.messages && data.messages.length > 0) {
           for (const msg of data.messages) {
             const content = msg.content || '';
-            // البحث عن رابط التحقق في محتوى الرسالة
+            // البحث عن رابط htmlpub في محتوى الرسالة
             const match = content.match(/(https:\/\/htmlpub\.com\/api\/auth\/callback\/[^\s"'\n]+)/);
             if (match) return match[0];
           }
@@ -83,7 +80,6 @@ async function pollForMagicLink(email, res, signal) {
       await delay(500);
     }
   }
-
   return null;
 }
 
@@ -111,7 +107,7 @@ export default async function handler(req, res) {
   req.on('close', () => abortController.abort());
 
   try {
-    // 1. بريد مؤقت
+    // 1. بريد جديد
     sendSSE(res, 'status', { step: 'email', message: 'Creating temporary email...' });
     const email = await createTempEmail();
     sendSSE(res, 'status', { step: 'email', email, message: `Email created: ${email}` });
