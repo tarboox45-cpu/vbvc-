@@ -1,16 +1,23 @@
-// pages/api/htmlpub.js أو api/htmlpub.js
 import { createHash } from 'crypto';
 
-// تكوين مؤقت
+// ======================== الإعدادات ========================
 const EMAIL_API = 'https://api.internal.temp-mail.io/api/v3/email';
 const HTMLPUB_BASE = 'https://htmlpub.com';
-const MAX_ATTEMPTS = 30;
-const POLL_INTERVAL = 3000; // 3 ثواني
+const MAX_ATTEMPTS = 30;               // عدد محاولات فحص البريد
+const POLL_INTERVAL = 3000;            // 3 ثوانٍ بين كل فحص
+const PING_INTERVAL = 4000;            // 4 ثوانٍ بين كل نبضة لإبقاء الاتصال حياً
+const FALLBACK_CSRF = '0ce3ae7fbc30f663e116f935f2d7dafc94177c70dcc4f7def2089816f69bcabb';
 
-// دالة مساعدة للتأخير
+// ======================== دوال مساعدة ========================
 const delay = (ms) => new Promise(resolve => setTimeout(resolve, ms));
 
-// دالة لجلب CSRF token
+// إرسال حدث SSE
+const sendSSE = (res, event, data) => {
+  res.write(`event: ${event}\n`);
+  res.write(`data: ${JSON.stringify(data)}\n\n`);
+};
+
+// جلب رمز CSRF (مع fallback)
 async function fetchCsrfToken() {
   try {
     const res = await fetch(`${HTMLPUB_BASE}/api/auth/csrf`);
@@ -18,12 +25,13 @@ async function fetchCsrfToken() {
       const data = await res.json();
       return data.csrfToken;
     }
-  } catch (e) {}
-  // fallback token من الكود الأصلي
-  return '0ce3ae7fbc30f663e116f935f2d7dafc94177c70dcc4f7def2089816f69bcabb';
+  } catch (e) {
+    console.error('CSRF fetch error:', e);
+  }
+  return FALLBACK_CSRF;
 }
 
-// دالة لإنشاء بريد مؤقت
+// إنشاء بريد مؤقت
 async function createTempEmail() {
   const res = await fetch(`${EMAIL_API}/new`, {
     method: 'POST',
@@ -34,15 +42,30 @@ async function createTempEmail() {
   return data.email;
 }
 
-// دالة لاستطلاع البريد الإلكتروني للحصول على رابط التحقق
-async function pollForMagicLink(email, signal) {
-  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
-    if (signal.aborted) break;
+// فحص البريد مع إرسال نبضات دورية لإبقاء الاتصال مفتوحاً
+async function pollForMagicLink(email, res, signal) {
+  let attempts = 0;
+  let lastPing = Date.now();
+
+  while (attempts < MAX_ATTEMPTS) {
+    if (signal.aborted) throw new Error('Client aborted');
+
+    // إرسال ping كل PING_INTERVAL
+    const now = Date.now();
+    if (now - lastPing >= PING_INTERVAL) {
+      sendSSE(res, 'ping', {
+        attempts: attempts + 1,
+        max: MAX_ATTEMPTS,
+        message: 'Waiting for email...'
+      });
+      lastPing = now;
+    }
+
     try {
-      const res = await fetch(`${EMAIL_API}/${email}/messages`, { signal });
-      if (res.ok) {
-        const messages = await res.json();
-        if (messages && messages.length > 0) {
+      const fetchRes = await fetch(`${EMAIL_API}/${email}/messages`, { signal });
+      if (fetchRes.ok) {
+        const messages = await fetchRes.json();
+        if (messages?.length) {
           for (const msg of messages) {
             const body = (msg.body_text || '') + (msg.body_html || '');
             const match = body.match(/(https:\/\/htmlpub\.com\/api\/auth\/callback\/[^\s"']+)/);
@@ -50,61 +73,68 @@ async function pollForMagicLink(email, signal) {
           }
         }
       }
-    } catch (e) {}
-    await delay(POLL_INTERVAL);
+    } catch (e) {
+      if (e.name === 'AbortError') throw e;
+      // تجاهل أخطاء الشبكة العابرة
+    }
+
+    attempts++;
+    // انتظار مقسم لتحسين استجابة الإلغاء
+    const waitStart = Date.now();
+    while (Date.now() - waitStart < POLL_INTERVAL) {
+      if (signal.aborted) throw new Error('Client aborted');
+      await delay(500);
+    }
   }
+
   return null;
 }
 
+// ======================== معالج API الرئيسي ========================
 export default async function handler(req, res) {
-  // السماح بـ CORS
+  // إعدادات CORS
   res.setHeader('Access-Control-Allow-Origin', '*');
   res.setHeader('Access-Control-Allow-Methods', 'POST, OPTIONS');
   res.setHeader('Access-Control-Allow-Headers', 'Content-Type');
-  if (req.method === 'OPTIONS') return res.status(200).end();
 
-  if (req.method !== 'POST') {
-    return res.status(405).json({ error: 'Method not allowed' });
-  }
+  if (req.method === 'OPTIONS') return res.status(200).end();
+  if (req.method !== 'POST') return res.status(405).json({ error: 'Method not allowed' });
 
   const { prompt } = req.body;
-  if (!prompt) {
-    return res.status(400).json({ error: 'Prompt is required' });
+  if (!prompt || typeof prompt !== 'string') {
+    return res.status(400).json({ error: 'Prompt is required and must be a string' });
   }
 
-  // إعداد SSE للرد
+  // تهيئة SSE
   res.setHeader('Content-Type', 'text/event-stream');
   res.setHeader('Cache-Control', 'no-cache');
   res.setHeader('Connection', 'keep-alive');
+  res.setHeader('X-Accel-Buffering', 'no'); // لتعطيل التخزين المؤقت
   res.flushHeaders();
 
-  const sendEvent = (event, data) => {
-    res.write(`event: ${event}\n`);
-    res.write(`data: ${JSON.stringify(data)}\n\n`);
-  };
-
-  // إنشاء AbortController للتحكم في الطلبات إذا انقطع الاتصال
+  // إعداد متحكم بالإلغاء عند إغلاق العميل
   const abortController = new AbortController();
   req.on('close', () => abortController.abort());
 
   try {
-    // 1. إنشاء بريد مؤقت
-    sendEvent('status', { step: 'email', message: 'Creating temporary email...' });
+    // 1. بريد مؤقت
+    sendSSE(res, 'status', { step: 'email', message: 'Creating temporary email...' });
     const email = await createTempEmail();
-    sendEvent('status', { step: 'email', email, message: `Email created: ${email}` });
+    sendSSE(res, 'status', { step: 'email', email, message: `Email created: ${email}` });
 
-    // 2. جلب CSRF token
-    sendEvent('status', { step: 'csrf', message: 'Fetching CSRF token...' });
+    // 2. رمز CSRF
+    sendSSE(res, 'status', { step: 'csrf', message: 'Fetching CSRF token...' });
     const csrfToken = await fetchCsrfToken();
 
-    // 3. إرسال رابط تسجيل الدخول
-    sendEvent('status', { step: 'login', message: 'Sending magic link...' });
+    // 3. إرسال رابط الدخول
+    sendSSE(res, 'status', { step: 'login', message: 'Sending magic link...' });
     const loginPayload = new URLSearchParams({
       email,
       csrfToken,
       callbackUrl: '/edit',
       json: 'true'
     });
+
     const loginRes = await fetch(`${HTMLPUB_BASE}/api/auth/signin/nodemailer`, {
       method: 'POST',
       headers: {
@@ -118,33 +148,25 @@ export default async function handler(req, res) {
       signal: abortController.signal
     });
 
-    if (!loginRes.ok) {
-      throw new Error(`Login request failed: ${loginRes.status}`);
-    }
-    sendEvent('status', { step: 'login', message: 'Magic link sent. Waiting for email...' });
+    if (!loginRes.ok) throw new Error(`Failed to send magic link (${loginRes.status})`);
+    sendSSE(res, 'status', { step: 'login', message: 'Magic link sent. Waiting for email...' });
 
-    // 4. استطلاع البريد للحصول على الرابط
-    const magicLink = await pollForMagicLink(email, abortController.signal);
-    if (!magicLink) {
-      throw new Error('Magic link not found after multiple attempts');
-    }
-    sendEvent('status', { step: 'verify', message: 'Magic link found, verifying...' });
+    // 4. استطلاع البريد (مع ping)
+    const magicLink = await pollForMagicLink(email, res, abortController.signal);
+    if (!magicLink) throw new Error('Magic link not found after maximum attempts');
+    sendSSE(res, 'status', { step: 'verify', message: 'Magic link found, verifying...' });
 
-    // 5. زيارة الرابط السحري لاستلام الكوكيز
+    // 5. التحقق من الرابط وجلب الكوكيز
     const verifyRes = await fetch(magicLink, {
-      redirect: 'manual', // نتعامل يدويًا مع إعادة التوجيه
+      redirect: 'manual',
       signal: abortController.signal
     });
 
-    // استخراج الكوكيز من الـ response headers
     const cookies = verifyRes.headers.get('set-cookie');
-    if (!cookies) {
-      throw new Error('No session cookie received');
-    }
-    // تجهيز الكوكيز للاستخدام في الطلبات القادمة
+    if (!cookies) throw new Error('No session cookie received');
     const cookieHeader = cookies.split(',').map(c => c.split(';')[0]).join('; ');
 
-    sendEvent('status', { step: 'ai', message: 'Logged in. Starting AI generation...' });
+    sendSSE(res, 'status', { step: 'ai', message: 'Logged in. Starting AI generation...' });
 
     // 6. إنشاء محادثة AI
     const convRes = await fetch(`${HTMLPUB_BASE}/api/ai/conversations`, {
@@ -156,13 +178,11 @@ export default async function handler(req, res) {
       body: JSON.stringify({}),
       signal: abortController.signal
     });
-    if (!convRes.ok) {
-      throw new Error('Failed to create conversation');
-    }
+    if (!convRes.ok) throw new Error('Failed to create AI conversation');
     const convData = await convRes.json();
     const conversationId = convData.id;
 
-    // 7. إرسال الـ prompt واستقبال الرد المتدفق
+    // 7. إرسال prompt واستقبال الرد المتدفق
     const aiRes = await fetch(`${HTMLPUB_BASE}/api/ai/conversations/${conversationId}/messages`, {
       method: 'POST',
       headers: {
@@ -176,9 +196,7 @@ export default async function handler(req, res) {
       signal: abortController.signal
     });
 
-    if (!aiRes.ok) {
-      throw new Error(`AI request failed: ${aiRes.status}`);
-    }
+    if (!aiRes.ok) throw new Error(`AI request failed (${aiRes.status})`);
 
     // معالجة التدفق
     const reader = aiRes.body.getReader();
@@ -190,7 +208,7 @@ export default async function handler(req, res) {
     while (true) {
       const { done, value } = await reader.read();
       if (done) break;
-      
+
       buffer += decoder.decode(value, { stream: true });
       const lines = buffer.split('\n');
       buffer = lines.pop() || '';
@@ -201,12 +219,10 @@ export default async function handler(req, res) {
           if (jsonStr === '[DONE]') continue;
           try {
             const data = JSON.parse(jsonStr);
-            // إرسال النص المتدفق إلى العميل
-            if (data.type === 'text_delta') {
-              fullText += data.text || '';
-              sendEvent('text', { content: data.text });
+            if (data.type === 'text_delta' && data.text) {
+              fullText += data.text;
+              sendSSE(res, 'text', { content: data.text });
             }
-            // البحث عن معلومات الصفحة
             if (data.type === 'tool_result' && data.name === 'create_page') {
               pageInfo = JSON.parse(data.result);
             }
@@ -215,33 +231,50 @@ export default async function handler(req, res) {
       }
     }
 
-    // 8. إذا وُجدت صفحة، جلب HTML وحفظه (اختياري)
+    // 8. جلب HTML الصفحة إن وجدت
     let savedFile = null;
-    if (pageInfo && pageInfo.slug) {
-      const sourceRes = await fetch(`${HTMLPUB_BASE}/api/pages/${pageInfo.slug}/source`, {
-        headers: { 'Cookie': cookieHeader },
-        signal: abortController.signal
-      });
-      if (sourceRes.ok) {
-        const sourceData = await sourceRes.json();
-        savedFile = {
-          title: sourceData.title || pageInfo.title,
-          html: sourceData.html,
-          url: pageInfo.url
-        };
-      }
+    if (pageInfo?.slug) {
+      try {
+        const sourceRes = await fetch(`${HTMLPUB_BASE}/api/pages/${pageInfo.slug}/source`, {
+          headers: { 'Cookie': cookieHeader },
+          signal: abortController.signal
+        });
+        if (sourceRes.ok) {
+          const sourceData = await sourceRes.json();
+          savedFile = {
+            title: sourceData.title || pageInfo.title,
+            html: sourceData.html,
+            url: pageInfo.url
+          };
+        }
+      } catch (e) {}
     }
 
-    sendEvent('done', {
+    // 9. إرسال نتيجة النجاح
+    sendSSE(res, 'done', {
       success: true,
       pageUrl: pageInfo?.url,
       pageTitle: pageInfo?.title,
-      savedFile
+      savedFile: savedFile ? {
+        title: savedFile.title,
+        url: savedFile.url,
+        htmlPreview: savedFile.html?.substring(0, 200) + '...'
+      } : null
     });
 
   } catch (error) {
-    sendEvent('error', { message: error.message });
+    console.error('API Error:', error);
+    sendSSE(res, 'error', { message: error.message });
   } finally {
     res.end();
   }
 }
+
+// إعدادات خاصة بـ Vercel
+export const config = {
+  api: {
+    bodyParser: { sizeLimit: '2mb' },
+    responseLimit: false,
+    externalResolver: true
+  }
+};
